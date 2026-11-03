@@ -18,7 +18,7 @@ const enginePath = new URL("../scripts/dependency-engine.cjs", import.meta.url).
 const { inventory, variant, isolate } = require(enginePath);
 const scope = require("../scripts/dependency-scope.cjs");
 const report = require("../scripts/dependency-report.cjs");
-const { verifyTransitions } = require("../scripts/dependency-provenance.cjs");
+const { verifyTransitions, parseVersionMetadata, registryMetadata } = require("../scripts/dependency-provenance.cjs");
 
 const lock = (versions) => ({
   lockfileVersion: 3,
@@ -42,6 +42,26 @@ const fixtures = () => {
   };
   return { base, head };
 };
+
+test("registry metadata distinguishes attestation absence from malformed or unavailable data", () => {
+  const metadata = { name: "widget", version: "1.0.0", dist: { integrity: "sha512-fixture" } };
+  assert.deepEqual(parseVersionMetadata(JSON.stringify(metadata), "widget", "1.0.0"), { provenance: null });
+  assert.deepEqual(parseVersionMetadata(JSON.stringify({
+    ...metadata, dist: { ...metadata.dist, attestations: { provenance: { url: "https://example.invalid" } } },
+  }), "widget", "1.0.0"), { provenance: { url: "https://example.invalid" } });
+  for (const invalid of ["{}", "null", JSON.stringify({ ...metadata, name: "other" }),
+    JSON.stringify({ ...metadata, version: "2.0.0" }), JSON.stringify({ name: "widget", version: "1.0.0" })]) {
+    assert.throws(() => parseVersionMetadata(invalid, "widget", "1.0.0"));
+  }
+  const childProcess = require("node:child_process");
+  const original = childProcess.spawnSync;
+  try {
+    childProcess.spawnSync = () => ({ status: 1, stdout: "", error: new Error("registry unavailable") });
+    assert.deepEqual(registryMetadata("widget", "1.0.0"), { error: true });
+  } finally {
+    childProcess.spawnSync = original;
+  }
+});
 
 test("provenance policy rejects downgrades and unknown metadata, warns by package otherwise", async () => {
   const changes = new Map([["widget", [{

@@ -24,14 +24,33 @@ async function verifyTransitions(changes, lookup, verifySignatures) {
   return warnings;
 }
 
+function parseVersionMetadata(raw, expectedName, expectedVersion) {
+  const metadata = JSON.parse(raw);
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata) ||
+      metadata.name !== expectedName || metadata.version !== expectedVersion ||
+      !metadata.dist || typeof metadata.dist !== 'object' || Array.isArray(metadata.dist) ||
+      typeof metadata.dist.integrity !== 'string' || !metadata.dist.integrity) {
+    throw new Error('Unrecognized or mismatched npm version metadata');
+  }
+  const attestations = metadata.dist.attestations;
+  if (attestations === undefined) return { provenance: null };
+  if (!attestations || typeof attestations !== 'object' || Array.isArray(attestations)) {
+    throw new Error('Unrecognized npm attestation metadata');
+  }
+  if (attestations.provenance === undefined) return { provenance: null };
+  if (!attestations.provenance || typeof attestations.provenance !== 'object' || Array.isArray(attestations.provenance)) {
+    throw new Error('Unrecognized npm provenance metadata');
+  }
+  return { provenance: attestations.provenance };
+}
+
 function registryMetadata(name, version) {
-  const result = cp.spawnSync('npm', ['view', `${name}@${version}`, 'dist.attestations', '--json'], {
+  const result = cp.spawnSync('npm', ['view', `${name}@${version}`, '--json'], {
     encoding: 'utf8', timeout: 15000, maxBuffer: 128 * 1024,
   });
   if (result.status !== 0 || result.error) return { error: true };
   try {
-    const attestation = JSON.parse(result.stdout || '{}');
-    return { provenance: attestation.provenance || null };
+    return parseVersionMetadata(result.stdout || '', name, version);
   } catch {
     return { error: true };
   }
@@ -51,7 +70,7 @@ async function run() {
   }
 }
 
-module.exports = { verifyTransitions, registryMetadata, run };
+module.exports = { verifyTransitions, parseVersionMetadata, registryMetadata, run };
 if (require.main === module) {
   run().catch(error => {
     console.error(error.message);
