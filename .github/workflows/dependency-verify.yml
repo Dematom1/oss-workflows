@@ -198,7 +198,9 @@ jobs:
                 if (before) lock.packages[key] = before;
                 else delete lock.packages[key];
               }
-              for (const section of sections) {
+              const isRootDependency = sections.some(section =>
+                Object.hasOwn(baseManifest[section] || {}, name) || Object.hasOwn(manifest[section] || {}, name));
+              if (isRootDependency) for (const section of sections) {
                 for (const target of [pkg, lock.packages['']]) {
                   const source = target === pkg ? baseManifest : base.packages[''];
                   if (Object.hasOwn(source[section] || {}, name)) {

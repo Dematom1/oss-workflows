@@ -259,6 +259,22 @@ test("inventory rejects added or removed transitive paths", () => {
   assert.throws(() => inventory(base, head), /Unsupported dependency topology change/);
 });
 
+test("reverting a nested package does not alter the root parent's specification", () => {
+  const { base, head } = fixtures();
+  base.packages[""].dependencies.parent = "1.0.0";
+  head.packages[""].dependencies.parent = "1.1.0";
+  base.packages["node_modules/parent"] = { version: "1.0.0" };
+  head.packages["node_modules/parent"] = { version: "1.1.0" };
+  base.packages["node_modules/parent/node_modules/child"] = { version: "1.0.0" };
+  head.packages["node_modules/parent/node_modules/child"] = { version: "1.1.0" };
+  const changed = inventory(base, head);
+  const variantResult = variant(base, head, head.packages[""], base.packages[""], changed, new Set(["parent"]));
+  assert.equal(variantResult.lock.packages["node_modules/parent"].version, "1.1.0");
+  assert.equal(variantResult.lock.packages["node_modules/parent/node_modules/child"].version, "1.0.0");
+  assert.equal(variantResult.pkg.dependencies.parent, "1.1.0");
+  assert.equal(variantResult.lock.packages[""].dependencies.parent, "1.1.0");
+});
+
 test("variants restore exact base entries, scoped transitives and root specifications", () => {
   const { base, head } = fixtures();
   base.packages["node_modules/alpha/node_modules/@scope/transitive"] = {
