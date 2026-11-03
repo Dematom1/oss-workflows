@@ -199,6 +199,53 @@ test("privileged split rejects forged files and culprit names without writes", a
   }
 });
 
+test("privileged split emits a parseable Renovate-only commit blob", async () => {
+  const script = scriptFor("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
+  const { base, head } = fixtures();
+  const requests = [];
+  const content = (value) => ({ data: {
+    size: JSON.stringify(value).length,
+    encoding: "base64",
+    content: Buffer.from(JSON.stringify(value)).toString("base64"),
+  } });
+  await runInNewContext(`(async () => { ${script} })()`, {
+    require: (name) => name === "node:fs" ? {
+      existsSync: () => true,
+      statSync: () => ({ size: 100 }),
+      readFileSync: () => JSON.stringify({ culprits: ["beta"], rounds: 4, message: "isolated" }),
+    } : require(name),
+    process: { env: {
+      AUTO_SPLIT: "true", SPLIT_APP_ID: "1", SPLIT_APP_PRIVATE_KEY: "key",
+      RENOVATE_TOKEN: "token", ARTIFACTS: "/fixture", VERIFY_RESULT: "failure",
+      BISECT_RESULT: "success", LOCKFILE: "package-lock.json", GITHUB_API_URL: "https://api.github.test",
+    } },
+    context: { repo: { owner: "fixture", repo: "repo" }, payload: {
+      pull_request: { number: 1, head: { sha: "head", ref: "renovate/weekly-non-major", repo: { full_name: "fixture/repo" } }, base: { sha: "base" } },
+    } },
+    core: { setFailed() {}, summary: { addRaw: () => ({ write: async () => {} }) } },
+    github: {
+      rest: {
+        pulls: { get: async () => ({ data: { head: { sha: "head" }, state: "open", user: { login: "renovate[bot]" }, head: { sha: "head", repo: { full_name: "fixture/repo" } } } }) },
+        repos: { getContent: async ({ path, ref }) => path === "renovate.json" ? content({ packageRules: [] }) : content(ref === "base" ? base : head) },
+        git: { getCommit: async () => ({ data: { tree: { sha: "base-tree" } } }) },
+        issues: { listComments: {}, createComment: async () => {} },
+      },
+      paginate: async () => [],
+    },
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => ({ sha: "new-sha" }) };
+    },
+    Buffer,
+  });
+  const treePost = requests.find(({ url, options }) => url.endsWith("/git/trees") && options.method === "POST");
+  const tree = JSON.parse(treePost.options.body).tree;
+  assert.deepEqual(tree.map(({ path }) => path), ["renovate.json"]);
+  const emitted = JSON.parse(tree[0].content);
+  assert.deepEqual(emitted.packageRules[0].matchPackageNames, ["beta"]);
+  assert.equal(emitted.packageRules[0].automerge, false);
+});
+
 test("inventory rejects added or removed transitive paths", () => {
   const { base, head } = fixtures();
   base.packages["node_modules/alpha/node_modules/left-pad"] = { version: "1.0.0" };
