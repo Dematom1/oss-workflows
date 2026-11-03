@@ -29,7 +29,7 @@ The workflow accepts these inputs:
 Operations must create a dedicated Renovate-split GitHub App with only `contents: write` and `pull-requests: write` permissions. The caller passes its `split-app-id` workflow input and maps its private key to the optional `split-app-private-key` secret.
 When `auto-split` is true, missing credentials fail clearly. A short-lived token is minted in the reporting job only; the App is not created by this workflow.
 
-Execution jobs have read-only tokens and do not persist checkout credentials.
+Command inputs are fixed by the caller's reviewed workflow and are never taken from PR metadata; dependency PRs cannot modify that workflow because scope rejects every other file. Execution jobs run only on `pull_request`, have read-only tokens, receive no secrets, and do not persist checkout credentials.
 Only the reporting job has write permissions and receives the short-lived dedicated App token. It has no checkout and runs no dependency code.
 The caller grants `contents: write` and `pull-requests: write` for reporting and optional splitting.
 
@@ -37,7 +37,7 @@ Verification rejects authors other than `renovate[bot]`, forks, non-default targ
 Previous filenames on renames receive the same scope check.
 The caller uses `pull_request`, never `pull_request_target`, with no paths filter.
 
-The built-in adapter supports npm lockfile version 3, including transitive packages, but not workspace links. Lockfile v2 requires a custom diagnostic command.
+The built-in adapter supports npm lockfile version 3 when package paths remain stable, but not workspace links or added/removed dependency paths. Topology changes fail diagnosis closed; lockfile v2 requires a custom diagnostic command.
 Other lock formats require a custom diagnostic command and an appropriate provenance command.
 A bounded npm diff and provenance report appear in the job summary and a sticky PR comment.
 

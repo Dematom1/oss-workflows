@@ -158,6 +158,15 @@ test("automatic splitting is opt-in and requires dedicated App credentials", asy
   }
 });
 
+test("inventory rejects added or removed transitive paths", () => {
+  const { base, head } = fixtures();
+  base.packages["node_modules/alpha/node_modules/left-pad"] = { version: "1.0.0" };
+  head.packages["node_modules/alpha/node_modules/left-pad"] = undefined;
+  delete head.packages["node_modules/alpha/node_modules/left-pad"];
+  head.packages["node_modules/alpha/node_modules/@scope/left-pad"] = { version: "1.0.0" };
+  assert.throws(() => inventory(base, head), /Unsupported dependency topology change/);
+});
+
 test("variants restore exact base entries, scoped transitives and root specifications", () => {
   const { base, head } = fixtures();
   base.packages["node_modules/alpha/node_modules/@scope/transitive"] = {

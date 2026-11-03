@@ -4,7 +4,8 @@
 # Pin both references to the same immutable shared-host SHA.
 # Require the caller workflow's success on the current PR SHA in the no-mistakes
 # gate; no exemption based only on an author/check name. No ruleset/bypass changes.
-# Inputs are trusted caller commands, executed in a read-only, credential-free job.
+# Caller commands are supplied by the reviewed caller workflow; PR metadata never supplies commands.
+# Scope rejects workflow changes. Commands run only in read-only, credential-free pull_request jobs.
 # install/build/test/smoke are required; smoke MUST use real binaries read-only.
 # axi-verify-command is optional only until axi-verify ships (visible placeholder).
 # provenance-command defaults to npm audit signatures: invalid attestations fail;
@@ -178,6 +179,7 @@ jobs:
               if (!key) continue;
               const before = base.packages[key], after = head.packages[key];
               if (JSON.stringify(before) === JSON.stringify(after)) continue;
+              if (!before || !after) throw new Error(`Unsupported dependency topology change: ${key}`);
               if (!key.includes('node_modules/')) throw new Error(`Unsupported workspace lock entry: ${key}`);
               const name = key.slice(key.lastIndexOf('node_modules/') + 13);
               if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name) || before?.link || after?.link) {
