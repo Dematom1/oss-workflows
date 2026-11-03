@@ -10,20 +10,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const require = createRequire(import.meta.url);
-const workflowPath = new URL("../.github/workflows/dependency-verify.yml", import.meta.url);
-const workflow = JSON.parse(execFileSync("ruby", ["-ryaml", "-rjson", "-e", `puts JSON.generate(YAML.load_file(ARGV.fetch(0)))`, workflowPath.pathname], { encoding: "utf8" }));
-const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
-const engineStep = steps.find((step) => step.run?.includes("cat > "));
-const engine = engineStep.run.split("<<'ENGINE'\n")[1].split("\nENGINE")[0];
-const scriptFor = (start, end) => steps.find((step) => step.with?.script?.includes(start))?.with.script;
-const engineModule = { exports: {} };
-runInNewContext(engine, { require, module: engineModule, structuredClone });
-const { inventory, variant, isolate } = engineModule.exports;
+const enginePath = new URL("../scripts/dependency-engine.cjs", import.meta.url).pathname;
+const { inventory, variant, isolate } = require(enginePath);
+const scope = require("../scripts/dependency-scope.cjs");
+const report = require("../scripts/dependency-report.cjs");
 
 const lock = (versions) => ({
   lockfileVersion: 3,
@@ -55,7 +49,6 @@ test("built-in inventory rejects npm v2 locks rather than changing lockfile form
 });
 
 test("scope rejects non-Renovate authors, forbidden paths, renames and incomplete file lists", async () => {
-  const script = scriptFor("// BEGIN DEPENDENCY SCOPE", "// END DEPENDENCY SCOPE");
   const pr = {
     number: 1,
     user: { login: "renovate[bot]", type: "Bot" },
@@ -64,7 +57,7 @@ test("scope rejects non-Renovate authors, forbidden paths, renames and incomplet
     changed_files: 1,
   };
   const check = (files, pullRequest = pr) =>
-    runInNewContext(`(async () => { ${script} })()`, {
+    scope({
       context: {
         eventName: "pull_request",
         repo: { owner: "fixture", repo: "repo" },
@@ -119,18 +112,17 @@ test("scope rejects non-Renovate authors, forbidden paths, renames and incomplet
   );
 });
 
-test("automatic splitting is opt-in and requires dedicated App credentials", async () => {
-  const script = scriptFor("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
+test("PR report does not render untrusted bisect messages", async () => {
   for (const enabled of [false, true]) {
     const failures = [];
     const comments = [];
-    await runInNewContext(`(async () => { ${script} })()`, {
+    await report({
       require: (name) => name === "node:fs" ? {
         existsSync: () => true,
         statSync: () => ({ size: 100 }),
-        readFileSync: () => JSON.stringify({
-          message: "Isolated beta", culprits: ["beta"], rounds: 4,
-        }),
+        readFileSync: (location) => JSON.stringify(location.includes("dependency-diff")
+        ? { message: "<@everyone> malicious diff" }
+        : { message: "Isolated beta", culprits: ["beta"], rounds: 4 }),
       } : require(name),
       process: { env: {
         AUTO_SPLIT: String(enabled), SPLIT_APP_ID: "", SPLIT_APP_PRIVATE_KEY: "", ARTIFACTS: "/fixture",
@@ -154,100 +146,11 @@ test("automatic splitting is opt-in and requires dedicated App credentials", asy
       },
       Buffer,
     });
-    assert.equal(failures.length, enabled ? 1 : 0);
-    assert.match(comments[0], enabled ? /dedicated Renovate-split App/ : /split is disabled/);
+    assert.equal(failures.length, 0);
     assert.doesNotMatch(comments[0], /Isolated beta/);
-    if (enabled) assert.match(failures[0], /split-app-id or split-app-private-key is missing/);
+    assert.doesNotMatch(comments[0], /<@everyone>/);
+    assert.match(comments[0], /Untrusted npm diff diagnostic/);
   }
-});
-
-test("privileged split rejects forged files and culprit names without writes", async () => {
-  const script = scriptFor("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
-  const { base, head } = fixtures();
-  for (const payload of [
-    { culprits: ["beta"], rounds: 4, message: "x", files: { "package.json": "{}" } },
-    { culprits: ["attacker-package"], rounds: 4, message: "x" },
-  ]) {
-    let writes = 0;
-    const apiContent = (object) => ({ data: {
-      size: JSON.stringify(object).length,
-      encoding: "base64",
-      content: Buffer.from(JSON.stringify(object)).toString("base64"),
-    } });
-    const context = {
-      require: (name) => name === "node:fs" ? {
-        existsSync: () => true,
-        statSync: () => ({ size: 100 }),
-        readFileSync: () => JSON.stringify(payload),
-      } : require(name),
-      process: { env: {
-        AUTO_SPLIT: "true", SPLIT_APP_ID: "1", SPLIT_APP_PRIVATE_KEY: "key",
-        RENOVATE_TOKEN: "token", ARTIFACTS: "/fixture", VERIFY_RESULT: "failure",
-        BISECT_RESULT: "success", LOCKFILE: "package-lock.json",
-      } },
-      context: { repo: { owner: "fixture", repo: "repo" }, payload: {
-        pull_request: { number: 1, head: { sha: "head" }, base: { sha: "base" } },
-      } },
-      core: { setFailed() {}, summary: { addRaw: () => ({ write: async () => {} }) } },
-      github: {
-        rest: {
-          pulls: { get: async () => ({ data: { head: { sha: "head" }, state: "open", user: { login: "renovate[bot]" }, head: { sha: "head", repo: { full_name: "fixture/repo" } } } }) },
-          repos: { getContent: async ({ ref }) => apiContent(ref === "base" ? base : head) },
-        },
-      },
-      fetch: async () => { writes++; throw new Error("unexpected privileged write"); },
-      Buffer,
-    };
-    await assert.rejects(runInNewContext(`(async () => { ${script} })()`, context));
-    assert.equal(writes, 0);
-  }
-});
-
-test("privileged split emits a parseable Renovate-only commit blob", async () => {
-  const script = scriptFor("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
-  const { base, head } = fixtures();
-  const requests = [];
-  const content = (value) => ({ data: {
-    size: JSON.stringify(value).length,
-    encoding: "base64",
-    content: Buffer.from(JSON.stringify(value)).toString("base64"),
-  } });
-  await runInNewContext(`(async () => { ${script} })()`, {
-    require: (name) => name === "node:fs" ? {
-      existsSync: () => true,
-      statSync: () => ({ size: 100 }),
-      readFileSync: () => JSON.stringify({ culprits: ["beta"], rounds: 4, message: "isolated" }),
-    } : require(name),
-    process: { env: {
-      AUTO_SPLIT: "true", SPLIT_APP_ID: "1", SPLIT_APP_PRIVATE_KEY: "key",
-      RENOVATE_TOKEN: "token", ARTIFACTS: "/fixture", VERIFY_RESULT: "failure",
-      BISECT_RESULT: "success", LOCKFILE: "package-lock.json", GITHUB_API_URL: "https://api.github.test",
-    } },
-    context: { repo: { owner: "fixture", repo: "repo" }, payload: {
-      pull_request: { number: 1, head: { sha: "head", ref: "renovate/weekly-non-major", repo: { full_name: "fixture/repo" } }, base: { sha: "base" } },
-    } },
-    core: { setFailed() {}, summary: { addRaw: () => ({ write: async () => {} }) } },
-    github: {
-      rest: {
-        pulls: { get: async () => ({ data: { head: { sha: "head" }, state: "open", user: { login: "renovate[bot]" }, head: { sha: "head", repo: { full_name: "fixture/repo" } } } }) },
-        repos: { getContent: async ({ path, ref }) => path === "renovate.json" ? content({ packageRules: [] }) : content(ref === "base" ? base : head) },
-        git: { getCommit: async () => ({ data: { tree: { sha: "base-tree" } } }) },
-        issues: { listComments: {}, createComment: async () => {} },
-      },
-      paginate: async () => [],
-    },
-    fetch: async (url, options) => {
-      requests.push({ url, options });
-      return { ok: true, json: async () => ({ sha: "new-sha" }) };
-    },
-    Buffer,
-  });
-  const treePost = requests.find(({ url, options }) => url.endsWith("/git/trees") && options.method === "POST");
-  const tree = JSON.parse(treePost.options.body).tree;
-  assert.deepEqual(tree.map(({ path }) => path), ["renovate.json"]);
-  const emitted = JSON.parse(tree[0].content);
-  assert.deepEqual(emitted.packageRules[0].matchPackageNames, ["beta"]);
-  assert.equal(emitted.packageRules[0].automerge, false);
 });
 
 test("inventory rejects added or removed transitive paths", () => {
@@ -356,7 +259,7 @@ test("shipped engine runs a network-free bisect against fixture locks in a real 
   const root = mkdtempSync(join(tmpdir(), "dependency-bisect-"));
   const repo = join(root, "repo"),
     reports = join(root, "reports"),
-    engineFile = join(root, "engine.cjs");
+    engineFile = enginePath;
   mkdirSync(repo);
   const git = (...args) =>
     execFileSync("git", args, {
@@ -373,7 +276,6 @@ test("shipped engine runs a network-free bisect against fixture locks in a real 
     );
   };
   try {
-    writeFileSync(engineFile, engine);
     git("init", "-b", "main");
     git("config", "user.email", "fixture@example.invalid");
     git("config", "user.name", "Fixture");

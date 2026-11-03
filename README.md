@@ -16,6 +16,7 @@ The preset does not change rulesets or add bypass actors.
 
 The workflow accepts these inputs:
 
+- `shared-script-ref`: required 40-character immutable SHA for this shared repository; use the same SHA as the reusable workflow and Renovate preset.
 - `install-command`, `build-command`, `test-command`, `smoke-command`: required shell commands. Smoke tests must use real binaries without writes to external systems.
 - `axi-verify-command`: defaults to empty with a visible not-yet-shipped placeholder. Set it when axi-verify is available.
 - `provenance-command`: defaults to `npm audit signatures`. Invalid signatures or available provenance fail verification. Missing provenance produces warnings, not a claim of verified provenance.
@@ -24,14 +25,8 @@ The workflow accepts these inputs:
 - `bisect-max-rounds`: defaults to `8`, allowed range 1 to 32 trials, including baseline and reduced-batch checks.
 - `bisect-timeout-minutes`: defaults to `20`, allowed range 1 to 60 minutes.
 - `diagnostic-command`: defaults to empty for the built-in npm bisect. The workflow header documents the custom adapter's environment and report format.
-- `auto-split`: defaults to `false`. Diagnosis still runs, but no split commit occurs.
-
-Operations must create a dedicated Renovate-split GitHub App with only `contents: write` and `pull-requests: write` permissions. The caller passes its `split-app-id` workflow input and maps its private key to the optional `split-app-private-key` secret.
-When `auto-split` is true, missing credentials fail clearly. A short-lived token is minted in the reporting job only; the App is not created by this workflow.
-
 Command inputs are fixed by the caller's reviewed workflow and are never taken from PR metadata; dependency PRs cannot modify that workflow because scope rejects every other file. Execution jobs run only on `pull_request`, have read-only tokens, receive no secrets, and do not persist checkout credentials.
-Only the reporting job has write permissions and receives the short-lived dedicated App token. It has no checkout and runs no dependency code.
-The caller grants `contents: write` and `pull-requests: write` for reporting and optional splitting.
+The reporting job has `contents: read` and `pull-requests: write`; it checks out only the trusted shared-tools repository at `shared-script-ref`, never caller code, and runs no dependency code.
 
 Verification rejects authors other than `renovate[bot]`, forks, non-default targets, incomplete file lists, and changes outside `package.json`, `renovate.json`, and `lockfile-path`.
 Previous filenames on renames receive the same scope check.
@@ -39,12 +34,12 @@ The caller uses `pull_request`, never `pull_request_target`, with no paths filte
 
 The built-in adapter supports npm lockfile version 3 when package paths remain stable, but not workspace links or added/removed dependency paths. Topology changes fail diagnosis closed; lockfile v2 requires a custom diagnostic command.
 Other lock formats require a custom diagnostic command and an appropriate provenance command.
-A bounded npm diff and provenance report appear in the job summary and a sticky PR comment.
+A bounded npm diff and provenance report appear in the job summary and a sticky PR comment. Raw npm diff output is labeled untrusted, escaped as text, and capped at 30,000 characters.
 
-Only `renovate/weekly-non-major` branches can split automatically.
+Only `renovate/weekly-non-major` branches run automatic bounded bisect diagnosis.
 Bisect restores exact base lock entries, reproduces the original failure, checks the baseline, isolates failures, and checks the reduced batch.
 Interactions, prerequisite failures, unsupported locks, timeouts, and trial limits report an inconclusive result without splitting.
-The privileged job accepts only culprit package names, independently checks them against the base/head lockfile diff, and commits a fixed Renovate exclusion rule only; it never commits artifact-supplied file contents. Renovate must regenerate the batch after that rule merges. The failed SHA remains failed until a new SHA passes full verification; diagnosis never waives the original failure.
+Bisect reports culprit package names but does not modify the PR. Automatic splitting is deferred until a dedicated split App is provisioned and the split lifecycle is implemented. Diagnosis never waives the failure; the PR must pass full verification.
 
 ## Caller configuration
 
@@ -56,22 +51,18 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 jobs:
   dependencies:
     if: github.event.pull_request.user.login == 'renovate[bot]'
     uses: Dematom1/oss-workflows/.github/workflows/dependency-verify.yml@<SHA>
     with:
+      shared-script-ref: <SHA>
       install-command: npm ci
       build-command: npm run build
       test-command: npm test
       smoke-command: npm run test:real
-      # auto-split remains false until an authorized token is selected.
-    # To enable splitting, set auto-split: true and configure the dedicated App:
-    #   split-app-id: ${{ vars.RENOVATE_SPLIT_APP_ID }}
-    # secrets:
-    #   split-app-private-key: ${{ secrets.RENOVATE_SPLIT_APP_PRIVATE_KEY }}
 ```
 
 The caller's `renovate.json` extends the shared preset:
