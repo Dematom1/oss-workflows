@@ -4,11 +4,17 @@ const { inventory } = require('./dependency-engine.cjs');
 
 async function verifyTransitions(changes, lookup, verifySignatures) {
   const warnings = [];
+  const metadata = new Map();
+  const cachedLookup = (name, version) => {
+    const key = `${name}@${version}`;
+    if (!metadata.has(key)) metadata.set(key, lookup(name, version));
+    return metadata.get(key);
+  };
   for (const [name, entries] of changes) {
     for (const { before, after } of entries) {
       if (!before?.version || !after?.version || before.version === after.version) continue;
-      const previous = await lookup(name, before.version);
-      const next = await lookup(name, after.version);
+      const previous = await cachedLookup(name, before.version);
+      const next = await cachedLookup(name, after.version);
       if (previous.error || next.error) {
         throw new Error(`Cannot verify provenance transition for ${name}: registry metadata unavailable`);
       }
@@ -45,7 +51,7 @@ function parseVersionMetadata(raw, expectedName, expectedVersion) {
 }
 
 function registryMetadata(name, version) {
-  const result = cp.spawnSync('npm', ['view', `${name}@${version}`, '--json'], {
+  const result = cp.spawnSync('npm', ['view', `${name}@${version}`, 'name', 'version', 'dist', '--json'], {
     encoding: 'utf8', timeout: 15000, maxBuffer: 128 * 1024,
   });
   if (result.status !== 0 || result.error) return { error: true };
@@ -58,7 +64,9 @@ function registryMetadata(name, version) {
 
 async function run() {
   const lockfile = process.env.LOCKFILE;
-  const base = JSON.parse(cp.execFileSync('git', ['show', `${process.env.BASE_REF}:${lockfile}`], { encoding: 'utf8' }));
+  const base = JSON.parse(cp.execFileSync('git', ['show', `${process.env.BASE_REF}:${lockfile}`], {
+    encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+  }));
   const head = JSON.parse(fs.readFileSync(lockfile, 'utf8'));
   const changes = inventory(base, head);
   const warnings = await verifyTransitions(changes, registryMetadata, () => {

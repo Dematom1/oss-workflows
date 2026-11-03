@@ -32,8 +32,8 @@ Verification rejects authors other than `renovate[bot]`, forks, non-default targ
 Previous filenames on renames receive the same scope check.
 The caller uses `pull_request`, never `pull_request_target`, with no paths filter.
 
-The built-in adapter supports npm lockfile version 3 when package paths remain stable, but not workspace links or added/removed dependency paths. Topology changes fail diagnosis closed; lockfile v2 requires a custom diagnostic command.
-The built-in provenance policy currently requires npm lockfile v3; other package managers need a dedicated provenance adapter before this workflow can verify them.
+The built-in adapter supports npm lockfile version 3, including added and removed dependency paths, but not workspace links. Lockfile v2 requires a custom diagnostic command.
+The built-in provenance policy currently requires npm lockfile v3; other package managers need a dedicated provenance adapter before this workflow can verify them. Provenance comparisons apply to version changes at paths present in both locks. The signature command still checks the installed dependencies, including additions.
 The bounded npm diff appears in the sticky PR comment. Provenance downgrades and signature failures fail verification; packages never previously carrying provenance are named in the verification summary. Raw npm diff output is labeled untrusted, escaped as text, and capped at 30,000 characters with the omitted-character count reported.
 
 Only `renovate/weekly-non-major` branches run automatic bounded bisect diagnosis.

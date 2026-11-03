@@ -63,6 +63,27 @@ test("registry metadata distinguishes attestation absence from malformed or unav
   }
 });
 
+test("registry metadata requests only the fields needed for provenance", () => {
+  const cp = require("node:child_process"), original = cp.spawnSync;
+  try {
+    cp.spawnSync = (_command, args) => {
+      assert.deepEqual(args, ["view", "widget@1.0.0", "name", "version", "dist", "--json"]);
+      return { status: 0, stdout: JSON.stringify({ name: "widget", version: "1.0.0", dist: { integrity: "sha512-fixture" } }) };
+    };
+    assert.deepEqual(registryMetadata("widget", "1.0.0"), { provenance: null });
+  } finally { cp.spawnSync = original; }
+});
+
+test("provenance reuses metadata for repeated package versions in one verification", async () => {
+  const entry = { before: { version: "1.0.0" }, after: { version: "2.0.0" } };
+  const calls = [];
+  await verifyTransitions(new Map([["widget", [entry, entry]]]), async (name, version) => {
+    calls.push(`${name}@${version}`);
+    return { provenance: {} };
+  }, () => {});
+  assert.deepEqual(calls, ["widget@1.0.0", "widget@2.0.0"]);
+});
+
 test("provenance policy rejects downgrades and unknown metadata, warns by package otherwise", async () => {
   const changes = new Map([["widget", [{
     before: { version: "1.0.0" }, after: { version: "2.0.0" },
@@ -155,54 +176,70 @@ test("scope rejects non-Renovate authors, forbidden paths, renames and incomplet
   );
 });
 
-test("PR report does not render untrusted bisect messages", async () => {
-  for (const enabled of [false, true]) {
-    const failures = [];
-    const comments = [];
-    await report({
-      require: (name) => name === "node:fs" ? {
-        existsSync: () => true,
-        statSync: () => ({ size: 100 }),
-        readFileSync: (location) => JSON.stringify(location.includes("dependency-diff")
-        ? { message: "<@everyone> malicious diff" }
-        : { message: "Isolated beta", culprits: ["beta"], rounds: 4 }),
-      } : require(name),
-      process: { env: {
-        AUTO_SPLIT: String(enabled), SPLIT_APP_ID: "", SPLIT_APP_PRIVATE_KEY: "", ARTIFACTS: "/fixture",
-        VERIFY_RESULT: "failure", BISECT_RESULT: "success",
-      } },
-      context: { repo: { owner: "fixture", repo: "repo" }, payload: {
-        pull_request: { number: 1, head: { sha: "fixture" }, base: { sha: "base" } },
-      } },
-      core: {
-        setFailed: (message) => failures.push(message),
-        summary: { addRaw: () => ({ write: async () => {} }) },
+test("PR report validates culprits against large locks and does not render untrusted bisect messages", async () => {
+  const comments = [];
+  await report({
+    require: (name) => name === "node:fs" ? {
+      existsSync: () => true,
+      statSync: () => ({ size: 100 }),
+      readFileSync: (location) => JSON.stringify(location.includes("dependency-diff")
+      ? { message: "<@everyone> malicious diff" }
+      : { message: "Isolated beta", culprits: ["beta"], rounds: 4 }),
+    } : require(name),
+    process: { env: {
+      ARTIFACTS: "/fixture", LOCKFILE: "package-lock.json",
+      VERIFY_RESULT: "failure", BISECT_RESULT: "success",
+    } },
+    context: { repo: { owner: "fixture", repo: "repo" }, payload: {
+      pull_request: { number: 1, head: { sha: "fixture" }, base: { sha: "base" } },
+    } },
+    core: { summary: { addRaw: () => ({ write: async () => {} }) } },
+    github: {
+      paginate: async () => [],
+      rest: {
+        repos: { getContent: async ({ path, ref }) => {
+          assert.equal(path, "package-lock.json");
+          return { data: { type: "file", size: 3 * 1024 * 1024, sha: ref, encoding: "none", content: "" } };
+        } },
+        git: { getBlob: async ({ file_sha }) => {
+          const value = lock(file_sha === "base" ? { beta: "1.0.0", gamma: "1.0.0" } : { beta: "1.1.0", delta: "1.0.0" });
+          value.padding = "x".repeat(2 * 1024 * 1024);
+          const content = JSON.stringify(value);
+          return { data: { size: Buffer.byteLength(content), encoding: "base64", content: Buffer.from(content).toString("base64") } };
+        } },
+        issues: { listComments: {}, createComment: async (comment) => comments.push(comment.body) },
       },
-      github: {
-        paginate: async () => [],
-        rest: {
-          repos: { getContent: async () => ({ data: {
-            size: 2, encoding: "base64", content: Buffer.from('{"lockfileVersion":3,"packages":{"":{}}}').toString("base64"),
-          } }) },
-          issues: { listComments: {}, createComment: async (comment) => comments.push(comment.body) },
-        },
-      },
-      Buffer,
-    });
-    assert.equal(failures.length, 0);
-    assert.doesNotMatch(comments[0], /Isolated beta/);
-    assert.doesNotMatch(comments[0], /<@everyone>/);
-    assert.match(comments[0], /Untrusted npm diff diagnostic/);
-  }
+    },
+  });
+  assert.doesNotMatch(comments[0], /Isolated beta/);
+  assert.doesNotMatch(comments[0], /<@everyone>/);
+  assert.match(comments[0], /Untrusted npm diff diagnostic/);
+  assert.match(comments[0], /isolated beta in 4 trials/);
+  assert.match(comments[0], /`delta`: `\(added\) → 1.0.0`/);
+  assert.match(comments[0], /`gamma`: `1.0.0 → \(removed\)`/);
 });
 
-test("inventory rejects added or removed transitive paths", () => {
+test("inventory retains added and removed paths; variants and provenance handle them", async () => {
   const { base, head } = fixtures();
   base.packages["node_modules/alpha/node_modules/left-pad"] = { version: "1.0.0" };
-  head.packages["node_modules/alpha/node_modules/left-pad"] = undefined;
-  delete head.packages["node_modules/alpha/node_modules/left-pad"];
   head.packages["node_modules/alpha/node_modules/@scope/left-pad"] = { version: "1.0.0" };
-  assert.throws(() => inventory(base, head), /Unsupported dependency topology change/);
+  const changes = inventory(base, head);
+  assert.deepEqual(changes.get("left-pad"), [{
+    key: "node_modules/alpha/node_modules/left-pad", before: { version: "1.0.0" }, after: undefined,
+  }]);
+  assert.deepEqual(changes.get("@scope/left-pad"), [{
+    key: "node_modules/alpha/node_modules/@scope/left-pad", before: undefined, after: { version: "1.0.0" },
+  }]);
+  assert.deepEqual(variant(base, head, head.packages[""], base.packages[""], changes, new Set()).lock, base);
+  assert.deepEqual(variant(base, head, head.packages[""], base.packages[""], changes, new Set(changes.keys())).lock, head);
+  const lookedUp = [];
+  let audited = false;
+  await verifyTransitions(changes, async (name) => {
+    lookedUp.push(name);
+    return { provenance: null };
+  }, () => { audited = true; });
+  assert.equal(audited, true);
+  assert.ok(!lookedUp.includes("left-pad") && !lookedUp.includes("@scope/left-pad"));
 });
 
 test("reverting a nested package does not alter the root parent's specification", () => {
@@ -298,7 +335,7 @@ test("bisect isolates multiple culprits, verifies the remainder and fails closed
   );
 });
 
-test("shipped engine runs a network-free bisect against fixture locks in a real git repo", () => {
+for (const padding of [0, 2 * 1024 * 1024]) test(`shipped CLI handles topology changes and isolates without renovate.json (padding ${padding})`, () => {
   const root = mkdtempSync(join(tmpdir(), "dependency-bisect-"));
   const repo = join(root, "repo"),
     reports = join(root, "reports"),
@@ -311,6 +348,7 @@ test("shipped engine runs a network-free bisect against fixture locks in a real 
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
   const { base, head } = fixtures();
+  for (const value of [base, head]) value.packages[""].description = "x".repeat(padding);
   const write = (value) => {
     writeFileSync(join(repo, "package-lock.json"), JSON.stringify(value));
     writeFileSync(
@@ -323,13 +361,24 @@ test("shipped engine runs a network-free bisect against fixture locks in a real 
     git("config", "user.email", "fixture@example.invalid");
     git("config", "user.name", "Fixture");
     write(base);
-    writeFileSync(
-      join(repo, "renovate.json"),
-      JSON.stringify({ extends: ["local>fixture/config"] }),
-    );
     git("add", ".");
     git("commit", "-m", "base");
     const baseSha = git("rev-parse", "HEAD");
+    const topology = structuredClone(base);
+    delete topology.packages["node_modules/gamma"];
+    topology.packages["node_modules/delta"] = { version: "1.0.0" };
+    write(topology);
+    const env = { ...process.env, BASE_REF: baseSha, LOCKFILE: "package-lock.json", REPORT_DIR: reports };
+    const diff = spawnSync(process.execPath, [engineFile, "diff"], { cwd: repo, encoding: "utf8", env });
+    assert.equal(diff.status, 0, diff.stderr);
+    const diffMessage = JSON.parse(readFileSync(join(reports, "diff.json"), "utf8")).message;
+    assert.match(diffMessage, /delta: \(added\) → 1.0.0/);
+    assert.match(diffMessage, /gamma: 1.0.0 → \(removed\)/);
+    const provenance = spawnSync(process.execPath, [new URL("../scripts/dependency-provenance.cjs", import.meta.url).pathname], {
+      cwd: repo, encoding: "utf8", env: { ...env, PROVENANCE_COMMAND: "printf signature-check-ran" },
+    });
+    assert.equal(provenance.status, 0, provenance.stderr);
+    assert.match(provenance.stdout, /signature-check-ran/);
     write(head);
     git("add", ".");
     git("commit", "-m", "batch");
@@ -361,6 +410,7 @@ test("shipped engine runs a network-free bisect against fixture locks in a real 
       readFileSync(join(reports, "report.json"), "utf8"),
     );
     assert.deepEqual(report.culprits, ["beta"]);
+    assert.match(report.message, /Diagnosis only; the PR is unchanged/);
     assert.equal(Object.hasOwn(report, "files"), false);
     assert.deepEqual(Object.keys(report).sort(), ["culprits", "message", "rounds"]);
     assert.equal(readFileSync(join(repo, "package-lock.json"), "utf8"), before);

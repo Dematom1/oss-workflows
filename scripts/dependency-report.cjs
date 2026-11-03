@@ -11,8 +11,12 @@ const diff = get('dependency-diff', 'diff.json');
 const pr = context.payload.pull_request;
 const contentAt = async (file, ref) => {
   const {data} = await github.rest.repos.getContent({...context.repo, path: file, ref});
-  if (Array.isArray(data) || data.size > 8 * 1024 * 1024 || data.encoding !== 'base64') throw new Error('Cannot validate dependency lockfile');
-  return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+  if (Array.isArray(data) || data.type !== 'file' || data.size > 8 * 1024 * 1024) throw new Error('Cannot validate dependency lockfile');
+  const {data: blob} = await github.rest.git.getBlob({...context.repo, file_sha: data.sha});
+  if (blob.size > 8 * 1024 * 1024 || blob.encoding !== 'base64' || typeof blob.content !== 'string') throw new Error('Cannot validate dependency lockfile');
+  const content = Buffer.from(blob.content, 'base64');
+  if (content.length > 8 * 1024 * 1024) throw new Error('Cannot validate dependency lockfile');
+  return JSON.parse(content.toString('utf8'));
 };
 const [baseLock, headLock] = await Promise.all([
   contentAt(process.env.LOCKFILE, pr.base.sha), contentAt(process.env.LOCKFILE, pr.head.sha),
@@ -22,10 +26,10 @@ for (const key of new Set([...Object.keys(baseLock.packages || {}), ...Object.ke
   const before = baseLock.packages?.[key], after = headLock.packages?.[key];
   if (JSON.stringify(before) === JSON.stringify(after)) continue;
   const marker = key.lastIndexOf('node_modules/');
-  if (marker < 0 || !before || !after) continue;
+  if (marker < 0) continue;
   const name = key.slice(marker + 13);
   if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name)) continue;
-  changed.set(name, {before: before.version || '(unknown)', after: after.version || '(unknown)'});
+  changed.set(name, {before: before ? before.version || '(unknown)' : '(added)', after: after ? after.version || '(unknown)' : '(removed)'});
 }
 const clean = value => String(value).replace(/[\r\n`<>]/g, '_').slice(0, 100);
 let message = `<!-- dependency-verification -->\n## Dependency verification\nHead: ${pr.head.sha}\nVerification: ${process.env.VERIFY_RESULT}\n\n### Dependency changes\n`;
