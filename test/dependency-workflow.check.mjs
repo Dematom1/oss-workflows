@@ -15,19 +15,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const require = createRequire(import.meta.url);
-const workflow = readFileSync(
-  new URL("../.github/workflows/dependency-verify.yml", import.meta.url),
-  "utf8",
-);
-const block = (start, end) =>
-  workflow
-    .split(start)[1]
-    .split(end)[0]
-    .split("\n")
-    .slice(1)
-    .map((line) => line.replace(/^ {10}/, ""))
-    .join("\n");
-const engine = block("// BEGIN DEPENDENCY ENGINE", "// END DEPENDENCY ENGINE");
+const workflowPath = new URL("../.github/workflows/dependency-verify.yml", import.meta.url);
+const workflow = JSON.parse(execFileSync("ruby", ["-ryaml", "-rjson", "-e", `puts JSON.generate(YAML.load_file(ARGV.fetch(0)))`, workflowPath.pathname], { encoding: "utf8" }));
+const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
+const engineStep = steps.find((step) => step.run?.includes("cat > "));
+const engine = engineStep.run.split("<<'ENGINE'\n")[1].split("\nENGINE")[0];
+const scriptFor = (start, end) => steps.find((step) => step.with?.script?.includes(start))?.with.script;
 const engineModule = { exports: {} };
 runInNewContext(engine, { require, module: engineModule, structuredClone });
 const { inventory, variant, isolate } = engineModule.exports;
@@ -62,7 +55,7 @@ test("built-in inventory rejects npm v2 locks rather than changing lockfile form
 });
 
 test("scope rejects non-Renovate authors, forbidden paths, renames and incomplete file lists", async () => {
-  const script = block("// BEGIN DEPENDENCY SCOPE", "// END DEPENDENCY SCOPE");
+  const script = scriptFor("// BEGIN DEPENDENCY SCOPE", "// END DEPENDENCY SCOPE");
   const pr = {
     number: 1,
     user: { login: "renovate[bot]", type: "Bot" },
@@ -127,7 +120,7 @@ test("scope rejects non-Renovate authors, forbidden paths, renames and incomplet
 });
 
 test("automatic splitting is opt-in and requires dedicated App credentials", async () => {
-  const script = block("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
+  const script = scriptFor("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
   for (const enabled of [false, true]) {
     const failures = [];
     const comments = [];

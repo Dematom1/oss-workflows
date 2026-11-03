@@ -10,7 +10,7 @@ Renovate preset: `github>Dematom1/oss-workflows//renovate/axi#<SHA>`.
 Renovate appends `.json` to the preset path. Both references use the same immutable commit SHA.
 
 The preset waits three days after a release and schedules one non-major batch before 06:00 UTC on Monday.
-All packages share the batch. Majors remain separate and require review.
+Non-major updates share the batch. Major and replacement updates remain separate and require review.
 Automerge depends on the caller repository's required checks and branch protection.
 The preset does not change rulesets or add bypass actors.
 

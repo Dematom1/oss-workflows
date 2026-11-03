@@ -19,6 +19,12 @@
       "automerge": true
     },
     {
+      "description": "Replacement upgrades need separate review",
+      "matchUpdateTypes": ["replacement"],
+      "groupName": "replacement dependencies",
+      "automerge": false
+    },
+    {
       "description": "Major upgrades always need review and stay outside the batch",
       "matchUpdateTypes": ["major"],
       "groupName": null,
