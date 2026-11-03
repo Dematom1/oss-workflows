@@ -85,18 +85,8 @@ async function main(mode) {
     for (const [name, entries] of changes) {
       const versions = entries.map(e => `${e.before?.version || '(added)'} → ${e.after?.version || '(removed)'}`);
       message += `- ${name}: ${[...new Set(versions)].join(', ')}\n`;
-      // npm audit signatures verifies registry signatures and provenance when present.
-      // Absence is visible, never silently called verified provenance.
       for (const e of entries) {
-        if (++count > 20) { message += '  Provenance metadata not queried: diagnostic entry limit reached.\n'; break; }
-        if (e.after?.version) {
-          const metadata = cp.spawnSync('npm', ['view', `${name}@${e.after.version}`, 'dist.attestations', '--json'], {
-            encoding: 'utf8', timeout: 15000, maxBuffer: 128 * 1024,
-          });
-          let provenance = null;
-          try { provenance = JSON.parse(metadata.stdout || '{}').provenance; } catch { /* Report unknown metadata, not absence. */ }
-          message += `  ${name}@${e.after.version} provenance: ${metadata.status !== 0 ? 'metadata query failed (unknown)' : provenance ? 'available; npm audit signatures must verify it' : 'MISSING from registry metadata (warning)'}\n`;
-        }
+        if (++count > 20) { message += '  Additional dependency diffs omitted after the 20-entry limit.\n'; break; }
         if (!e.before?.version || !e.after?.version || e.before.version === e.after.version) continue;
         const result = cp.spawnSync('npm', ['diff', '--ignore-scripts', '--diff', `${name}@${e.before.version}`, '--diff', `${name}@${e.after.version}`], {
           encoding: 'utf8', timeout: 15000, maxBuffer: 128 * 1024,
@@ -105,7 +95,7 @@ async function main(mode) {
         message += `\n<details><summary>${name}: npm diff (exit ${result.status ?? 'timeout/error'})</summary>\n\n\`\`\`diff\n${text.slice(0, 1800)}\n\`\`\`\n</details>\n`;
       }
     }
-    message += '\nDiff output bounded to 20 entries / 1,800 characters each. Missing provenance is not proof of provenance.\n';
+    message += '\nDiff output bounded to 20 entries / 1,800 characters each.\n';
     fs.writeFileSync(path.join(out, 'diff.json'), JSON.stringify({message: message.slice(0, 55000)}));
     return;
   }
@@ -131,7 +121,10 @@ async function main(mode) {
         const key = order[i] === 'axi' ? 'axi-verify-command' : `${order[i]}-command`;
         const command = commands[key];
         if (!command) continue;
-        const run = cp.spawnSync('bash', ['-e', '-o', 'pipefail', '-c', command], {
+        const trialCommand = order[i] === 'provenance'
+          ? `node "${process.env.RUNNER_TEMP}/shared-scripts/dependency-provenance.cjs"`
+          : command;
+        const run = cp.spawnSync('bash', ['-e', '-o', 'pipefail', '-c', trialCommand], {
           stdio: 'inherit', timeout: Math.max(1, deadline - Date.now()),
         });
         if (run.error || run.signal) throw new Error('Cannot isolate: trial timed out or was terminated');

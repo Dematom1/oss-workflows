@@ -19,7 +19,7 @@ The workflow accepts these inputs:
 - `shared-script-ref`: required 40-character immutable SHA for this shared repository; use the same SHA as the reusable workflow and Renovate preset.
 - `install-command`, `build-command`, `test-command`, `smoke-command`: required shell commands. Smoke tests must use real binaries without writes to external systems.
 - `axi-verify-command`: defaults to empty with a visible not-yet-shipped placeholder. Set it when axi-verify is available.
-- `provenance-command`: defaults to `npm audit signatures`. Invalid signatures or available provenance fail verification. Missing provenance produces warnings, not a claim of verified provenance.
+- `provenance-command`: defaults to `npm audit signatures`. Invalid signatures fail verification. The workflow compares registry provenance for each changed package version: if the prior version had provenance, the new version must also; missing or unavailable metadata fails that comparison. When the prior version had no provenance, the package is named in a warning.
 - `lockfile-path`: defaults to `package-lock.json`, relative to the repository root.
 - `node-version`: defaults to `22`.
 - `bisect-max-rounds`: defaults to `8`, allowed range 1 to 32 trials, including baseline and reduced-batch checks.
@@ -33,8 +33,8 @@ Previous filenames on renames receive the same scope check.
 The caller uses `pull_request`, never `pull_request_target`, with no paths filter.
 
 The built-in adapter supports npm lockfile version 3 when package paths remain stable, but not workspace links or added/removed dependency paths. Topology changes fail diagnosis closed; lockfile v2 requires a custom diagnostic command.
-Other lock formats require a custom diagnostic command and an appropriate provenance command.
-A bounded npm diff and provenance report appear in the job summary and a sticky PR comment. Raw npm diff output is labeled untrusted, escaped as text, and capped at 30,000 characters.
+The built-in provenance policy currently requires npm lockfile v3; other package managers need a dedicated provenance adapter before this workflow can verify them.
+The bounded npm diff appears in the sticky PR comment. Provenance downgrades and signature failures fail verification; packages never previously carrying provenance are named in the verification summary. Raw npm diff output is labeled untrusted, escaped as text, and capped at 30,000 characters with the omitted-character count reported.
 
 Only `renovate/weekly-non-major` branches run automatic bounded bisect diagnosis.
 Bisect restores exact base lock entries, reproduces the original failure, checks the baseline, isolates failures, and checks the reduced batch.

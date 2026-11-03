@@ -18,6 +18,7 @@ const enginePath = new URL("../scripts/dependency-engine.cjs", import.meta.url).
 const { inventory, variant, isolate } = require(enginePath);
 const scope = require("../scripts/dependency-scope.cjs");
 const report = require("../scripts/dependency-report.cjs");
+const { verifyTransitions } = require("../scripts/dependency-provenance.cjs");
 
 const lock = (versions) => ({
   lockfileVersion: 3,
@@ -41,6 +42,28 @@ const fixtures = () => {
   };
   return { base, head };
 };
+
+test("provenance policy rejects downgrades and unknown metadata, warns by package otherwise", async () => {
+  const changes = new Map([["widget", [{
+    before: { version: "1.0.0" }, after: { version: "2.0.0" },
+  }]]]);
+  const retained = await verifyTransitions(changes, async (_name, version) => ({
+    provenance: version === "1.0.0" || version === "2.0.0" ? { attestations: [] } : null,
+  }), () => {});
+  assert.deepEqual(retained, []);
+
+  await assert.rejects(verifyTransitions(changes, async (_name, version) => ({
+    provenance: version === "1.0.0" ? { attestations: [] } : null,
+  }), () => {}), /Provenance downgrade refused/);
+
+  const warning = await verifyTransitions(changes, async () => ({ provenance: null }), () => {});
+  assert.deepEqual(warning, ["widget: neither previously published version is required to have provenance"]);
+
+  await assert.rejects(verifyTransitions(changes, async () => ({ error: true }), () => {}), /metadata unavailable/);
+  await assert.rejects(verifyTransitions(changes, async () => ({ provenance: {} }), () => {
+    throw new Error("npm audit signatures failed");
+  }), /npm audit signatures failed/);
+});
 
 test("built-in inventory rejects npm v2 locks rather than changing lockfile format", () => {
   const { base, head } = fixtures();

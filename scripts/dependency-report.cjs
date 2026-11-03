@@ -32,7 +32,7 @@ let message = `<!-- dependency-verification -->\n## Dependency verification\nHea
 message += [...changed].slice(0, 50).map(([name, versions]) => `- \`${clean(name)}\`: \`${clean(versions.before)} → ${clean(versions.after)}\``).join('\n') || '- No package version changes found.';
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/@/g, '@&#8203;');
 const rawDiff = diff?.message || 'npm diff output unavailable';
-message += `\n\n<details><summary>Untrusted npm diff diagnostic</summary><pre>${escape(rawDiff.slice(0, 30000))}${rawDiff.length > 30000 ? '\n[truncated]' : ''}</pre></details>`;
+message += `\n\n<details><summary>Untrusted npm diff diagnostic</summary><pre>${escape(rawDiff.slice(0, 30000))}${rawDiff.length > 30000 ? `\n[truncated ${rawDiff.length - 30000} characters]` : ''}</pre></details>`;
 const validResult = result && Object.keys(result).every(key => ['culprits', 'rounds', 'message'].includes(key)) &&
   Array.isArray(result.culprits) && Number.isInteger(result.rounds) && result.rounds > 0 &&
   new Set(result.culprits).size === result.culprits.length && result.culprits.every(name => changed.has(name));
