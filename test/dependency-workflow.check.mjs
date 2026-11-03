@@ -137,7 +137,7 @@ test("automatic splitting is opt-in and requires dedicated App credentials", asy
         VERIFY_RESULT: "failure", BISECT_RESULT: "success",
       } },
       context: { repo: { owner: "fixture", repo: "repo" }, payload: {
-        pull_request: { number: 1, head: { sha: "fixture" } },
+        pull_request: { number: 1, head: { sha: "fixture" }, base: { sha: "base" } },
       } },
       core: {
         setFailed: (message) => failures.push(message),
@@ -145,14 +145,18 @@ test("automatic splitting is opt-in and requires dedicated App credentials", asy
       },
       github: {
         paginate: async () => [],
-        rest: { issues: {
-          listComments: {},
-          createComment: async (comment) => comments.push(comment.body),
-        } },
+        rest: {
+          repos: { getContent: async () => ({ data: {
+            size: 2, encoding: "base64", content: Buffer.from('{"lockfileVersion":3,"packages":{"":{}}}').toString("base64"),
+          } }) },
+          issues: { listComments: {}, createComment: async (comment) => comments.push(comment.body) },
+        },
       },
+      Buffer,
     });
     assert.equal(failures.length, enabled ? 1 : 0);
     assert.match(comments[0], enabled ? /dedicated Renovate-split App/ : /split is disabled/);
+    assert.doesNotMatch(comments[0], /Isolated beta/);
     if (enabled) assert.match(failures[0], /split-app-id or split-app-private-key is missing/);
   }
 });
