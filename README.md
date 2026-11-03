@@ -44,8 +44,7 @@ A bounded npm diff and provenance report appear in the job summary and a sticky 
 Only `renovate/weekly-non-major` branches can split automatically.
 Bisect restores exact base lock entries, reproduces the original failure, checks the baseline, isolates failures, and checks the reduced batch.
 Interactions, prerequisite failures, unsupported locks, timeouts, and trial limits report an inconclusive result without splitting.
-A split changes only dependency files and adds Renovate rules that keep culprit packages separate with automerge disabled.
-These rules take effect after the reduced batch merges. Fresh full verification on the split commit is required; diagnosis never waives the original failure.
+The privileged job accepts only culprit package names, independently checks them against the base/head lockfile diff, and commits a fixed Renovate exclusion rule only; it never commits artifact-supplied file contents. Renovate must regenerate the batch after that rule merges. The failed SHA remains failed until a new SHA passes full verification; diagnosis never waives the original failure.
 
 ## Caller configuration
 

@@ -129,8 +129,7 @@ test("automatic splitting is opt-in and requires dedicated App credentials", asy
         existsSync: () => true,
         statSync: () => ({ size: 100 }),
         readFileSync: () => JSON.stringify({
-          message: "Isolated beta", culprits: ["beta"],
-          files: { "package.json": "{}" },
+          message: "Isolated beta", culprits: ["beta"], rounds: 4,
         }),
       } : require(name),
       process: { env: {
@@ -155,6 +154,48 @@ test("automatic splitting is opt-in and requires dedicated App credentials", asy
     assert.equal(failures.length, enabled ? 1 : 0);
     assert.match(comments[0], enabled ? /dedicated Renovate-split App/ : /split is disabled/);
     if (enabled) assert.match(failures[0], /split-app-id or split-app-private-key is missing/);
+  }
+});
+
+test("privileged split rejects forged files and culprit names without writes", async () => {
+  const script = scriptFor("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
+  const { base, head } = fixtures();
+  for (const payload of [
+    { culprits: ["beta"], rounds: 4, message: "x", files: { "package.json": "{}" } },
+    { culprits: ["attacker-package"], rounds: 4, message: "x" },
+  ]) {
+    let writes = 0;
+    const apiContent = (object) => ({ data: {
+      size: JSON.stringify(object).length,
+      encoding: "base64",
+      content: Buffer.from(JSON.stringify(object)).toString("base64"),
+    } });
+    const context = {
+      require: (name) => name === "node:fs" ? {
+        existsSync: () => true,
+        statSync: () => ({ size: 100 }),
+        readFileSync: () => JSON.stringify(payload),
+      } : require(name),
+      process: { env: {
+        AUTO_SPLIT: "true", SPLIT_APP_ID: "1", SPLIT_APP_PRIVATE_KEY: "key",
+        RENOVATE_TOKEN: "token", ARTIFACTS: "/fixture", VERIFY_RESULT: "failure",
+        BISECT_RESULT: "success", LOCKFILE: "package-lock.json",
+      } },
+      context: { repo: { owner: "fixture", repo: "repo" }, payload: {
+        pull_request: { number: 1, head: { sha: "head" }, base: { sha: "base" } },
+      } },
+      core: { setFailed() {}, summary: { addRaw: () => ({ write: async () => {} }) } },
+      github: {
+        rest: {
+          pulls: { get: async () => ({ data: { head: { sha: "head" }, state: "open", user: { login: "renovate[bot]" }, head: { sha: "head", repo: { full_name: "fixture/repo" } } } }) },
+          repos: { getContent: async ({ ref }) => apiContent(ref === "base" ? base : head) },
+        },
+      },
+      fetch: async () => { writes++; throw new Error("unexpected privileged write"); },
+      Buffer,
+    };
+    await assert.rejects(runInNewContext(`(async () => { ${script} })()`, context));
+    assert.equal(writes, 0);
   }
 });
 
@@ -308,22 +349,8 @@ test("shipped engine runs a network-free bisect against fixture locks in a real 
       readFileSync(join(reports, "report.json"), "utf8"),
     );
     assert.deepEqual(report.culprits, ["beta"]);
-    const reduced = JSON.parse(report.files["package-lock.json"]);
-    assert.equal(reduced.packages["node_modules/beta"].version, "1.0.0");
-    assert.equal(reduced.packages["node_modules/alpha"].version, "1.1.0");
-    assert.deepEqual(
-      JSON.parse(report.files["renovate.json"]).packageRules.at(-1)
-        .matchPackageNames,
-      ["beta"],
-    );
-    assert.equal(
-      JSON.parse(report.files["renovate.json"]).packageRules.at(-1).automerge,
-      false,
-    );
-    assert.equal(
-      JSON.parse(report.files["renovate.json"]).packageRules.at(-1).groupName,
-      null,
-    );
+    assert.equal(Object.hasOwn(report, "files"), false);
+    assert.deepEqual(Object.keys(report).sort(), ["culprits", "message", "rounds"]);
     assert.equal(readFileSync(join(repo, "package-lock.json"), "utf8"), before);
     assert.equal(git("status", "--porcelain"), "");
   } finally {

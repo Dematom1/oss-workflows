@@ -11,11 +11,11 @@
 # provenance-command defaults to npm audit signatures: invalid attestations fail;
 # missing provenance is explicitly reported, not represented as verified provenance.
 # lockfile-path defaults to package-lock.json (relative to repository root).
-# The built-in diff/bisect adapter supports npm lockfile v2/v3, including transitives.
+# The built-in diff/bisect adapter supports npm lockfile v3, including stable paths.
 # For another package manager supply diagnostic-command: it receives BASE_REF,
 # HEAD_REF, LOCKFILE, FAILED_STEP, COMMANDS (JSON), MAX_ROUNDS, TIMEOUT_MINUTES,
-# REPORT_DIR; it must write report.json {message,culprits,files?}. files maps only
-# package.json, lockfile-path and renovate.json to their replacement UTF-8 text.
+# REPORT_DIR; it must write report.json {message,culprits,rounds}. The privileged
+# job independently validates package names and never consumes replacement contents.
 # Diagnostic commands must bound their own trials; the job also has a hard timeout.
 # The weekly batch branch is renovate/weekly-non-major (shared preset groupSlug);
 # other dependency PRs get all checks/diffs but are never automatically split.
@@ -307,11 +307,9 @@ jobs:
                 description: 'Dependency verification isolated these updates; keep separate for review',
                 matchPackageNames: result.culprits, groupName: null, automerge: false,
               });
-              const files = {'renovate.json': JSON.stringify(config, null, 2) + '\n'};
-              for (const f of originals.keys()) files[f] = fs.readFileSync(f, 'utf8');
               fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({
-                ...result, files,
-                message: `Isolated: ${result.culprits.join(', ')} in ${result.rounds} trials. Reduced batch passed the previously failing step; a new commit MUST pass the entire workflow. Renovate will raise isolated packages separately after this configuration merges.`,
+                ...result,
+                message: `Isolated: ${result.culprits.join(', ')} in ${result.rounds} trials. A separate Renovate rule will keep these packages out of future batches.`,
               }));
             } finally {
               for (const [file, content] of originals) fs.writeFileSync(file, content);
@@ -480,20 +478,46 @@ jobs:
               core.setFailed('auto-split is enabled but split-app-id or split-app-private-key is missing');
             }
             if (!splitEnabled) message += '\nAutomatic split is disabled (auto-split: false); diagnosis does not change this PR.';
-            if (process.env.BISECT_RESULT === 'success' && result?.culprits?.length && result.files) {
+            if (process.env.BISECT_RESULT === 'success' && result?.culprits?.length) {
               if (splitEnabled && process.env.SPLIT_APP_ID && process.env.SPLIT_APP_PRIVATE_KEY) {
                 const {data: current} = await github.rest.pulls.get({...context.repo, pull_number: pr.number});
                 if (current.head.sha !== pr.head.sha || current.state !== 'open' ||
                     current.user.login !== 'renovate[bot]' || current.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
                   throw new Error('PR changed during diagnosis; refusing stale split');
                 }
-                const allowed = new Set(['package.json', process.env.LOCKFILE, 'renovate.json']);
-                const tree = [];
-                for (const [file, content] of Object.entries(result.files)) {
-                  if (!allowed.has(file) || typeof content !== 'string') throw new Error('Split attempted non-dependency file');
-                  JSON.parse(content);
-                  tree.push({path: file, mode: '100644', type: 'blob', content});
+                if (Object.keys(result).some(key => !['culprits', 'rounds', 'message'].includes(key)) ||
+                    !Array.isArray(result.culprits) || !result.culprits.length ||
+                    !Number.isInteger(result.rounds) || result.rounds < 1 ||
+                    result.culprits.some(name => typeof name !== 'string' || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name))) {
+                  throw new Error('Invalid bisect result payload');
                 }
+                const contentAt = async (file, ref) => {
+                  const {data} = await github.rest.repos.getContent({...context.repo, path: file, ref});
+                  if (Array.isArray(data) || data.size > 8 * 1024 * 1024 || data.encoding !== 'base64') throw new Error('Cannot validate lockfile package set');
+                  return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+                };
+                const [baseLock, headLock] = await Promise.all([
+                  contentAt(process.env.LOCKFILE, pr.base.sha), contentAt(process.env.LOCKFILE, pr.head.sha),
+                ]);
+                const changed = new Set();
+                for (const key of new Set([...Object.keys(baseLock.packages || {}), ...Object.keys(headLock.packages || {})])) {
+                  const before = baseLock.packages?.[key], after = headLock.packages?.[key];
+                  if (JSON.stringify(before) === JSON.stringify(after)) continue;
+                  if (!before || !after) throw new Error('Cannot split a batch with dependency topology changes');
+                  const marker = key.lastIndexOf('node_modules/');
+                  if (marker < 0) continue;
+                  changed.add(key.slice(marker + 13));
+                }
+                if (new Set(result.culprits).size !== result.culprits.length || result.culprits.some(name => !changed.has(name))) {
+                  throw new Error('Bisect named a package outside the independently computed lockfile diff');
+                }
+                const config = await contentAt('renovate.json', pr.head.sha);
+                config.packageRules ||= [];
+                config.packageRules.push({
+                  description: 'Dependency verification isolated these updates; keep separate for review',
+                  matchPackageNames: result.culprits, groupName: null, automerge: false,
+                });
+                const tree = [{path: 'renovate.json', mode: '100644', type: 'blob', content: JSON.stringify(config, null, 2) + '\\n'}];
                 // github-script's injected client is bound to GITHUB_TOKEN. Native fetch
                 // avoids its authentication hook overriding the explicit Renovate token.
                 const request = async (endpoint, body) => {
@@ -518,7 +542,7 @@ jobs:
                   body: JSON.stringify({sha: commit.sha, force: false}),
                 });
                 if (!response.ok) throw new Error(`Split branch update refused: HTTP ${response.status}`);
-                message += `\nSplit commit: ${commit.sha}. Previous failure is NOT waived; awaiting full verification on the new SHA. Isolated packages remain separate and require review.`;
+                message += `\nSplit-rule commit: ${commit.sha}. Renovate must regenerate the batch after this rule merges. The failed SHA remains failed; the replacement batch requires full fresh verification.`;
               }
             }
             await core.summary.addRaw(message.slice(0, 60000)).write();
