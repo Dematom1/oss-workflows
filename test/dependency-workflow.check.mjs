@@ -120,9 +120,7 @@ test("scope rejects non-Renovate authors, forbidden paths, renames and incomplet
   );
 });
 
-test("automatic splitting is opt-in and requires a fresh-CI token", async () => {
-  assert.match(workflow, /auto-split:\n        type: boolean\n        default: false/);
-  assert.match(workflow, /RENOVATE_TOKEN:\n        required: false/);
+test("automatic splitting is opt-in and requires dedicated App credentials", async () => {
   const script = block("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
   for (const enabled of [false, true]) {
     const failures = [];
@@ -137,7 +135,7 @@ test("automatic splitting is opt-in and requires a fresh-CI token", async () => 
         }),
       } : require(name),
       process: { env: {
-        AUTO_SPLIT: String(enabled), RENOVATE_TOKEN: "", ARTIFACTS: "/fixture",
+        AUTO_SPLIT: String(enabled), SPLIT_APP_ID: "", SPLIT_APP_PRIVATE_KEY: "", ARTIFACTS: "/fixture",
         VERIFY_RESULT: "failure", BISECT_RESULT: "success",
       } },
       context: { repo: { owner: "fixture", repo: "repo" }, payload: {
@@ -156,8 +154,8 @@ test("automatic splitting is opt-in and requires a fresh-CI token", async () => 
       },
     });
     assert.equal(failures.length, enabled ? 1 : 0);
-    assert.match(comments[0], enabled ? /RENOVATE_TOKEN/ : /split is disabled/);
-    if (enabled) assert.match(failures[0], /RENOVATE_TOKEN is missing/);
+    assert.match(comments[0], enabled ? /dedicated Renovate-split App/ : /split is disabled/);
+    if (enabled) assert.match(failures[0], /split-app-id or split-app-private-key is missing/);
   }
 });
 

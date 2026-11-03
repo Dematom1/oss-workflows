@@ -23,9 +23,9 @@
 # Only a reproduced failure, passing base, isolated failures and a passing reduced
 # batch produce a split. Interactions, unsupported locks and limits fail closed.
 # auto-split defaults to false: bisect reports findings but does not change the PR.
-# To enable splitting, set auto-split: true and pass the optional RENOVATE_TOKEN
-# secret from an existing automation App/PAT with contents write. Missing tokens
-# fail clearly when splitting is enabled. GITHUB_TOKEN cannot trigger fresh CI.
+# To enable splitting, set auto-split: true and pass split-app-id plus
+# split-app-private-key. Operations must create the dedicated Renovate-split App
+# with contents and pull-requests write only. Missing credentials fail clearly.
 # Reuse an existing authorized automation identity; do not add any bypass actor.
 # The split changes only dependency files, appends Renovate separate-PR rules,
 # and MUST pass fresh verification on its new SHA. Split commits use a non-Renovate
@@ -68,6 +68,9 @@ on:
       auto-split:
         type: boolean
         default: false
+      split-app-id:
+        type: string
+        default: ""
       bisect-max-rounds:
         type: number
         default: 8
@@ -75,7 +78,7 @@ on:
         type: number
         default: 20
     secrets:
-      RENOVATE_TOKEN:
+      split-app-private-key:
         required: false
 
 permissions:
@@ -437,6 +440,15 @@ jobs:
         with:
           pattern: dependency-*
           path: ${{ runner.temp }}/dependency-artifacts
+      - name: Mint dedicated Renovate-split App token
+        if: ${{ inputs.auto-split }}
+        id: split-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ inputs.split-app-id }}
+          private-key: ${{ secrets.split-app-private-key }}
+          permission-contents: write
+          permission-pull-requests: write
       - name: Comment results and split isolated packages
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
@@ -444,7 +456,9 @@ jobs:
           BISECT_RESULT: ${{ needs.bisect.result }}
           LOCKFILE: ${{ inputs.lockfile-path }}
           AUTO_SPLIT: ${{ inputs.auto-split }}
-          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          SPLIT_APP_ID: ${{ inputs.split-app-id }}
+          SPLIT_APP_PRIVATE_KEY: ${{ secrets.split-app-private-key }}
+          RENOVATE_TOKEN: ${{ steps.split-token.outputs.token }}
           ARTIFACTS: ${{ runner.temp }}/dependency-artifacts
         with:
           script: |
@@ -463,13 +477,13 @@ jobs:
             message += diff?.message || 'Dependency diff unavailable: inspect the workflow logs.';
             message += `\n\nBisect: ${result?.message || (process.env.VERIFY_RESULT === 'success' ? 'not needed' : 'could not isolate; inspect logs/timeout')}`;
             const splitEnabled = process.env.AUTO_SPLIT === 'true';
-            if (splitEnabled && !process.env.RENOVATE_TOKEN) {
-              message += '\nAutomatic split requires the RENOVATE_TOKEN secret from an existing authorized automation App/PAT; GITHUB_TOKEN cannot trigger fresh CI.';
-              core.setFailed('auto-split is enabled but RENOVATE_TOKEN is missing; pass the secret or disable auto-split');
+            if (splitEnabled && (!process.env.SPLIT_APP_ID || !process.env.SPLIT_APP_PRIVATE_KEY)) {
+              message += '\nAutomatic split requires the dedicated Renovate-split App id and private key.';
+              core.setFailed('auto-split is enabled but split-app-id or split-app-private-key is missing');
             }
             if (!splitEnabled) message += '\nAutomatic split is disabled (auto-split: false); diagnosis does not change this PR.';
             if (process.env.BISECT_RESULT === 'success' && result?.culprits?.length && result.files) {
-              if (splitEnabled && process.env.RENOVATE_TOKEN) {
+              if (splitEnabled && process.env.SPLIT_APP_ID && process.env.SPLIT_APP_PRIVATE_KEY) {
                 const {data: current} = await github.rest.pulls.get({...context.repo, pull_number: pr.number});
                 if (current.head.sha !== pr.head.sha || current.state !== 'open' ||
                     current.user.login !== 'renovate[bot]' || current.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {

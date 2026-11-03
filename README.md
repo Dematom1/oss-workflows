@@ -26,13 +26,11 @@ The workflow accepts these inputs:
 - `diagnostic-command`: defaults to empty for the built-in npm bisect. The workflow header documents the custom adapter's environment and report format.
 - `auto-split`: defaults to `false`. Diagnosis still runs, but no split commit occurs.
 
-The optional secret `RENOVATE_TOKEN` accepts an existing authorized automation App token or PAT with contents write permission.
-When `auto-split` is true, an absent secret fails the reporting job with a clear error.
-A `GITHUB_TOKEN` split commit cannot trigger fresh CI, so it is not a substitute.
-The caller chooses the source secret and maps it to `RENOVATE_TOKEN`.
+Operations must create a dedicated Renovate-split GitHub App with only `contents: write` and `pull-requests: write` permissions. The caller passes its `split-app-id` workflow input and maps its private key to the optional `split-app-private-key` secret.
+When `auto-split` is true, missing credentials fail clearly. A short-lived token is minted in the reporting job only; the App is not created by this workflow.
 
 Execution jobs have read-only tokens and do not persist checkout credentials.
-Only the reporting job has write permissions and access to `RENOVATE_TOKEN`. It has no checkout and runs no dependency code.
+Only the reporting job has write permissions and receives the short-lived dedicated App token. It has no checkout and runs no dependency code.
 The caller grants `contents: write` and `pull-requests: write` for reporting and optional splitting.
 
 Verification rejects authors other than `renovate[bot]`, forks, non-default targets, incomplete file lists, and changes outside `package.json`, `renovate.json`, and `lockfile-path`.
@@ -71,9 +69,10 @@ jobs:
       test-command: npm test
       smoke-command: npm run test:real
       # auto-split remains false until an authorized token is selected.
-    # To enable splitting, set auto-split: true above and map the chosen secret:
+    # To enable splitting, set auto-split: true and configure the dedicated App:
+    #   split-app-id: ${{ vars.RENOVATE_SPLIT_APP_ID }}
     # secrets:
-    #   RENOVATE_TOKEN: ${{ secrets.EXISTING_AUTOMATION_TOKEN }}
+    #   split-app-private-key: ${{ secrets.RENOVATE_SPLIT_APP_PRIVATE_KEY }}
 ```
 
 The caller's `renovate.json` extends the shared preset:
