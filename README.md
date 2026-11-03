@@ -37,7 +37,7 @@ Verification rejects authors other than `renovate[bot]`, forks, non-default targ
 Previous filenames on renames receive the same scope check.
 The caller uses `pull_request`, never `pull_request_target`, with no paths filter.
 
-The built-in adapter supports npm lockfile versions 2 and 3, including transitive packages, but not workspace links.
+The built-in adapter supports npm lockfile version 3, including transitive packages, but not workspace links. Lockfile v2 requires a custom diagnostic command.
 Other lock formats require a custom diagnostic command and an appropriate provenance command.
 A bounded npm diff and provenance report appear in the job summary and a sticky PR comment.
 

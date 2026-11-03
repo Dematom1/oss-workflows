@@ -167,8 +167,8 @@ jobs:
           const gitFile = (ref, file) => cp.execFileSync('git', ['show', `${ref}:${file}`], {encoding: 'utf8'});
           const sections = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
           function inventory(base, head) {
-            if (![base, head].every(l => [2, 3].includes(l.lockfileVersion) && l.packages?.[''])) {
-              throw new Error('Built-in diagnostics require npm lockfile v2/v3; supply diagnostic-command for other formats');
+            if (![base, head].every(l => l.lockfileVersion === 3 && l.packages?.[''])) {
+              throw new Error('Built-in diagnostics require npm lockfile v3; supply diagnostic-command for v2 or other formats');
             }
             const changes = new Map();
             if ([base, head].some(l => Object.values(l.packages).some(p => p.link))) {
@@ -206,10 +206,6 @@ jobs:
                 }
               }
             }
-            // npm v2 duplicates the dependency graph in a legacy top-level field.
-            // ponytail: v2 diagnostics use the authoritative packages graph; npm ci accepts v3.
-            delete lock.dependencies;
-            lock.lockfileVersion = 3;
             return {lock, pkg};
           }
           function isolate(names, trial, maxTrials) {

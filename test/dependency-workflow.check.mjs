@@ -55,6 +55,12 @@ const fixtures = () => {
   return { base, head };
 };
 
+test("built-in inventory rejects npm v2 locks rather than changing lockfile format", () => {
+  const { base, head } = fixtures();
+  base.lockfileVersion = 2;
+  assert.throws(() => inventory(base, head), /require npm lockfile v3/);
+});
+
 test("scope rejects non-Renovate authors, forbidden paths, renames and incomplete file lists", async () => {
   const script = block("// BEGIN DEPENDENCY SCOPE", "// END DEPENDENCY SCOPE");
   const pr = {

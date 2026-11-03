@@ -13,6 +13,7 @@
     {
       "description": "Test all non-major dependency updates together once a week",
       "matchPackageNames": ["*"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest", "lockFileMaintenance"],
       "groupName": "weekly non-major dependencies",
       "groupSlug": "weekly-non-major",
       "automerge": true
