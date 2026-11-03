@@ -1,0 +1,326 @@
+// Standalone: node --test test/dependency-workflow.check.mjs (no npm install needed).
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+const require = createRequire(import.meta.url);
+const workflow = readFileSync(
+  new URL("../.github/workflows/dependency-verify.yml", import.meta.url),
+  "utf8",
+);
+const block = (start, end) =>
+  workflow
+    .split(start)[1]
+    .split(end)[0]
+    .split("\n")
+    .slice(1)
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n");
+const engine = block("// BEGIN DEPENDENCY ENGINE", "// END DEPENDENCY ENGINE");
+const engineModule = { exports: {} };
+runInNewContext(engine, { require, module: engineModule, structuredClone });
+const { inventory, variant, isolate } = engineModule.exports;
+
+const lock = (versions) => ({
+  lockfileVersion: 3,
+  packages: {
+    "": { dependencies: { alpha: "1.0.0", beta: "1.0.0", gamma: "1.0.0" } },
+    ...Object.fromEntries(
+      Object.entries(versions).map(([name, version]) => [
+        `node_modules/${name}`,
+        { version },
+      ]),
+    ),
+  },
+});
+const fixtures = () => {
+  const base = lock({ alpha: "1.0.0", beta: "1.0.0", gamma: "1.0.0" });
+  const head = lock({ alpha: "1.1.0", beta: "1.1.0", gamma: "1.1.0" });
+  head.packages[""].dependencies = {
+    alpha: "1.1.0",
+    beta: "1.1.0",
+    gamma: "1.1.0",
+  };
+  return { base, head };
+};
+
+test("scope rejects non-Renovate authors, forbidden paths, renames and incomplete file lists", async () => {
+  const script = block("// BEGIN DEPENDENCY SCOPE", "// END DEPENDENCY SCOPE");
+  const pr = {
+    number: 1,
+    user: { login: "renovate[bot]", type: "Bot" },
+    head: { repo: { full_name: "fixture/repo" } },
+    base: { ref: "main" },
+    changed_files: 1,
+  };
+  const check = (files, pullRequest = pr) =>
+    runInNewContext(`(async () => { ${script} })()`, {
+      context: {
+        eventName: "pull_request",
+        repo: { owner: "fixture", repo: "repo" },
+        payload: {
+          pull_request: pullRequest,
+          repository: { default_branch: "main" },
+        },
+      },
+      process: {
+        env: {
+          LOCKFILE: "package-lock.json",
+          MAX_ROUNDS: "8",
+          TIMEOUT_MINUTES: "20",
+          COMMANDS: JSON.stringify(
+            Object.fromEntries(
+              ["install", "build", "test", "smoke", "provenance"].map(
+                (name) => [`${name}-command`, "true"],
+              ),
+            ),
+          ),
+        },
+      },
+      core: { setOutput: () => {} },
+      github: {
+        paginate: async () => files,
+        rest: { pulls: { listFiles: {} } },
+      },
+    });
+  await check([{ filename: "package-lock.json" }]);
+  await assert.rejects(
+    check([{ filename: ".github/workflows/ci.yml" }]),
+    /dependency-only/,
+  );
+  await assert.rejects(
+    check([{ filename: "package.json", previous_filename: "src/cli.ts" }]),
+    /dependency-only/,
+  );
+  await assert.rejects(check([]), /incomplete/);
+  await assert.rejects(
+    check([{ filename: "package.json" }], {
+      ...pr,
+      user: { login: "human", type: "User" },
+    }),
+    /Renovate/,
+  );
+  await assert.rejects(
+    check([{ filename: "package.json" }], {
+      ...pr,
+      head: { repo: { full_name: "fork/repo" } },
+    }),
+    /same-repository/,
+  );
+});
+
+test("automatic splitting is opt-in and requires a fresh-CI token", async () => {
+  assert.match(workflow, /auto-split:\n        type: boolean\n        default: false/);
+  assert.match(workflow, /RENOVATE_TOKEN:\n        required: false/);
+  const script = block("// BEGIN DEPENDENCY REPORT", "// END DEPENDENCY REPORT");
+  for (const enabled of [false, true]) {
+    const failures = [];
+    const comments = [];
+    await runInNewContext(`(async () => { ${script} })()`, {
+      require: (name) => name === "node:fs" ? {
+        existsSync: () => true,
+        statSync: () => ({ size: 100 }),
+        readFileSync: () => JSON.stringify({
+          message: "Isolated beta", culprits: ["beta"],
+          files: { "package.json": "{}" },
+        }),
+      } : require(name),
+      process: { env: {
+        AUTO_SPLIT: String(enabled), RENOVATE_TOKEN: "", ARTIFACTS: "/fixture",
+        VERIFY_RESULT: "failure", BISECT_RESULT: "success",
+      } },
+      context: { repo: { owner: "fixture", repo: "repo" }, payload: {
+        pull_request: { number: 1, head: { sha: "fixture" } },
+      } },
+      core: {
+        setFailed: (message) => failures.push(message),
+        summary: { addRaw: () => ({ write: async () => {} }) },
+      },
+      github: {
+        paginate: async () => [],
+        rest: { issues: {
+          listComments: {},
+          createComment: async (comment) => comments.push(comment.body),
+        } },
+      },
+    });
+    assert.equal(failures.length, enabled ? 1 : 0);
+    assert.match(comments[0], enabled ? /RENOVATE_TOKEN/ : /split is disabled/);
+    if (enabled) assert.match(failures[0], /RENOVATE_TOKEN is missing/);
+  }
+});
+
+test("variants restore exact base entries, scoped transitives and root specifications", () => {
+  const { base, head } = fixtures();
+  base.packages["node_modules/alpha/node_modules/@scope/transitive"] = {
+    version: "1.0.0",
+    integrity: "base",
+  };
+  head.packages["node_modules/alpha/node_modules/@scope/transitive"] = {
+    version: "1.1.0",
+    integrity: "head",
+  };
+  const changes = inventory(base, head);
+  const result = variant(
+    base,
+    head,
+    head.packages[""],
+    base.packages[""],
+    changes,
+    new Set(["alpha"]),
+  );
+  assert.equal(result.lock.packages["node_modules/alpha"].version, "1.1.0");
+  assert.deepEqual(
+    result.lock.packages["node_modules/beta"],
+    base.packages["node_modules/beta"],
+  );
+  assert.deepEqual(
+    result.lock.packages["node_modules/alpha/node_modules/@scope/transitive"],
+    base.packages["node_modules/alpha/node_modules/@scope/transitive"],
+  );
+  assert.deepEqual(result.pkg.dependencies, {
+    alpha: "1.1.0",
+    beta: "1.0.0",
+    gamma: "1.0.0",
+  });
+  assert.equal(head.packages["node_modules/beta"].version, "1.1.0");
+});
+
+test("bisect isolates multiple culprits, verifies the remainder and fails closed", () => {
+  const observed = [];
+  const result = isolate(
+    ["a", "b", "c", "d"],
+    (active) => {
+      observed.push([...active]);
+      return active.includes("b") || active.includes("d") ? "fail" : "pass";
+    },
+    16,
+  );
+  assert.equal(JSON.stringify(result.culprits), JSON.stringify(["b", "d"]));
+  assert.deepEqual(observed.at(-1), ["a", "c"]);
+  assert.throws(
+    () => isolate(["a", "b"], () => "inconclusive", 8),
+    /earlier verification/,
+  );
+  assert.throws(() => isolate(["a", "b"], () => "fail", 8), /base dependency/);
+  assert.throws(
+    () => isolate(["a", "b"], () => "pass", 8),
+    /did not reproduce/,
+  );
+  assert.throws(
+    () =>
+      isolate(
+        ["a", "b"],
+        (active) => (active.length === 2 ? "fail" : "pass"),
+        8,
+      ),
+    /interacting/,
+  );
+  assert.throws(
+    () =>
+      isolate(
+        ["a", "b"],
+        (active) => (active.includes("b") ? "fail" : "pass"),
+        2,
+      ),
+    /trial limit/,
+  );
+});
+
+test("shipped engine runs a network-free bisect against fixture locks in a real git repo", () => {
+  const root = mkdtempSync(join(tmpdir(), "dependency-bisect-"));
+  const repo = join(root, "repo"),
+    reports = join(root, "reports"),
+    engineFile = join(root, "engine.cjs");
+  mkdirSync(repo);
+  const git = (...args) =>
+    execFileSync("git", args, {
+      cwd: repo,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  const { base, head } = fixtures();
+  const write = (value) => {
+    writeFileSync(join(repo, "package-lock.json"), JSON.stringify(value));
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify(value.packages[""]),
+    );
+  };
+  try {
+    writeFileSync(engineFile, engine);
+    git("init", "-b", "main");
+    git("config", "user.email", "fixture@example.invalid");
+    git("config", "user.name", "Fixture");
+    write(base);
+    writeFileSync(
+      join(repo, "renovate.json"),
+      JSON.stringify({ extends: ["local>fixture/config"] }),
+    );
+    git("add", ".");
+    git("commit", "-m", "base");
+    const baseSha = git("rev-parse", "HEAD");
+    write(head);
+    git("add", ".");
+    git("commit", "-m", "batch");
+    const headSha = git("rev-parse", "HEAD");
+    const before = readFileSync(join(repo, "package-lock.json"), "utf8");
+    const commands = {
+      "install-command":
+        "node -e \"JSON.parse(require('fs').readFileSync('package-lock.json'))\"",
+      "build-command":
+        "node -e \"process.exit(JSON.parse(require('fs').readFileSync('package-lock.json')).packages['node_modules/beta'].version === '1.1.0' ? 1 : 0)\"",
+    };
+    const result = spawnSync(process.execPath, [engineFile, "bisect"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        BASE_REF: baseSha,
+        HEAD_REF: headSha,
+        LOCKFILE: "package-lock.json",
+        FAILED_STEP: "build",
+        COMMANDS: JSON.stringify(commands),
+        REPORT_DIR: reports,
+        MAX_ROUNDS: "12",
+        TIMEOUT_MINUTES: "1",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(
+      readFileSync(join(reports, "report.json"), "utf8"),
+    );
+    assert.deepEqual(report.culprits, ["beta"]);
+    const reduced = JSON.parse(report.files["package-lock.json"]);
+    assert.equal(reduced.packages["node_modules/beta"].version, "1.0.0");
+    assert.equal(reduced.packages["node_modules/alpha"].version, "1.1.0");
+    assert.deepEqual(
+      JSON.parse(report.files["renovate.json"]).packageRules.at(-1)
+        .matchPackageNames,
+      ["beta"],
+    );
+    assert.equal(
+      JSON.parse(report.files["renovate.json"]).packageRules.at(-1).automerge,
+      false,
+    );
+    assert.equal(
+      JSON.parse(report.files["renovate.json"]).packageRules.at(-1).groupName,
+      null,
+    );
+    assert.equal(readFileSync(join(repo, "package-lock.json"), "utf8"), before);
+    assert.equal(git("status", "--porcelain"), "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1,0 +1,517 @@
+# Reusable dependency gate. Caller: pull_request (NOT pull_request_target), no path filter.
+# Workflow: Dematom1/oss-workflows/.github/workflows/dependency-verify.yml@<SHA>
+# Preset: github>Dematom1/oss-workflows//renovate/axi#<SHA> (.json is appended).
+# Pin both references to the same immutable shared-host SHA.
+# Require the caller workflow's success on the current PR SHA in the no-mistakes
+# gate; no exemption based only on an author/check name. No ruleset/bypass changes.
+# Inputs are trusted caller commands, executed in a read-only, credential-free job.
+# install/build/test/smoke are required; smoke MUST use real binaries read-only.
+# axi-verify-command is optional only until axi-verify ships (visible placeholder).
+# provenance-command defaults to npm audit signatures: invalid attestations fail;
+# missing provenance is explicitly reported, not represented as verified provenance.
+# lockfile-path defaults to package-lock.json (relative to repository root).
+# The built-in diff/bisect adapter supports npm lockfile v2/v3, including transitives.
+# For another package manager supply diagnostic-command: it receives BASE_REF,
+# HEAD_REF, LOCKFILE, FAILED_STEP, COMMANDS (JSON), MAX_ROUNDS, TIMEOUT_MINUTES,
+# REPORT_DIR; it must write report.json {message,culprits,files?}. files maps only
+# package.json, lockfile-path and renovate.json to their replacement UTF-8 text.
+# Diagnostic commands must bound their own trials; the job also has a hard timeout.
+# The weekly batch branch is renovate/weekly-non-major (shared preset groupSlug);
+# other dependency PRs get all checks/diffs but are never automatically split.
+# npm trials restore package entries/specs from the base lock; installation or
+# earlier-step failures are inconclusive, never evidence against a package.
+# Only a reproduced failure, passing base, isolated failures and a passing reduced
+# batch produce a split. Interactions, unsupported locks and limits fail closed.
+# auto-split defaults to false: bisect reports findings but does not change the PR.
+# To enable splitting, set auto-split: true and pass the optional RENOVATE_TOKEN
+# secret from an existing automation App/PAT with contents write. Missing tokens
+# fail clearly when splitting is enabled. GITHUB_TOKEN cannot trigger fresh CI.
+# Reuse an existing authorized automation identity; do not add any bypass actor.
+# The split changes only dependency files, appends Renovate separate-PR rules,
+# and MUST pass fresh verification on its new SHA. Split commits use a non-Renovate
+# author so Renovate does not regenerate this manually reduced branch before merge.
+# No merge or default-branch push.
+# Required caller permissions: contents: write, pull-requests: write. Execution
+# jobs downgrade contents to read; only report/split gets writes, never a checkout.
+name: Dependency verification
+
+on:
+  workflow_call:
+    inputs:
+      install-command:
+        type: string
+        required: true
+      build-command:
+        type: string
+        required: true
+      test-command:
+        type: string
+        required: true
+      smoke-command:
+        type: string
+        required: true
+      axi-verify-command:
+        type: string
+        default: ""
+      provenance-command:
+        type: string
+        default: npm audit signatures
+      diagnostic-command:
+        type: string
+        default: ""
+      lockfile-path:
+        type: string
+        default: package-lock.json
+      node-version:
+        type: string
+        default: "22"
+      auto-split:
+        type: boolean
+        default: false
+      bisect-max-rounds:
+        type: number
+        default: 8
+      bisect-timeout-minutes:
+        type: number
+        default: 20
+    secrets:
+      RENOVATE_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-verify-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      eligible: ${{ steps.scope.outputs.eligible }}
+      failed-step: >-
+        ${{ steps.install.outcome == 'failure' && 'install' ||
+            steps.provenance.outcome == 'failure' && 'provenance' ||
+            steps.build.outcome == 'failure' && 'build' ||
+            steps.test.outcome == 'failure' && 'test' ||
+            steps.axi.outcome == 'failure' && 'axi' ||
+            steps.smoke.outcome == 'failure' && 'smoke' || '' }}
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.sha }}
+      LOCKFILE: ${{ inputs.lockfile-path }}
+      COMMANDS: ${{ toJSON(inputs) }}
+    steps:
+      - name: Enforce Renovate identity and dependency-only scope
+        id: scope
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          MAX_ROUNDS: ${{ inputs.bisect-max-rounds }}
+          TIMEOUT_MINUTES: ${{ inputs.bisect-timeout-minutes }}
+        with:
+          script: |
+            // BEGIN DEPENDENCY SCOPE
+            const pr = context.payload.pull_request;
+            if (context.eventName !== 'pull_request' || !pr || pr.user.login !== 'renovate[bot]' ||
+                pr.user.type !== 'Bot' || pr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}` ||
+                pr.base.ref !== context.payload.repository.default_branch) {
+              throw new Error('Only same-repository Renovate pull_request updates to the default branch are eligible');
+            }
+            if (!/^(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_.-]+$/.test(process.env.LOCKFILE) ||
+                process.env.LOCKFILE.split('/').some(s => s === '..' || s === '.') ||
+                process.env.LOCKFILE.startsWith('.github/')) throw new Error('Unsafe lockfile path');
+            const commands = JSON.parse(process.env.COMMANDS);
+            for (const key of ['install-command', 'build-command', 'test-command', 'smoke-command', 'provenance-command']) {
+              if (!commands[key]?.trim()) throw new Error(`${key} must not be empty`);
+            }
+            const rounds = Number(process.env.MAX_ROUNDS), minutes = Number(process.env.TIMEOUT_MINUTES);
+            if (!Number.isInteger(rounds) || rounds < 1 || rounds > 32 ||
+                !Number.isInteger(minutes) || minutes < 1 || minutes > 60) throw new Error('Bisect limits: 1..32 trials, 1..60 minutes');
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo, pull_number: pr.number, per_page: 100,
+            });
+            const allowed = new Set(['package.json', process.env.LOCKFILE, 'renovate.json']);
+            if (!files.length || files.length !== pr.changed_files || files.some(f =>
+                !allowed.has(f.filename) || (f.previous_filename && !allowed.has(f.previous_filename)))) {
+              throw new Error('Changed files are incomplete or outside dependency-only scope');
+            }
+            core.setOutput('eligible', 'true');
+            // END DEPENDENCY SCOPE
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Prepare pinned diagnostic engine
+        shell: bash
+        run: |
+          echo "REPORT_DIR=$RUNNER_TEMP/dependency-report" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/dependency-report"
+          cat > "$RUNNER_TEMP/dependency-engine.cjs" <<'ENGINE'
+          // BEGIN DEPENDENCY ENGINE (node --test test/dependency-workflow.check.mjs)
+          const fs = require('node:fs');
+          const cp = require('node:child_process');
+          const path = require('node:path');
+          const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
+          const gitFile = (ref, file) => cp.execFileSync('git', ['show', `${ref}:${file}`], {encoding: 'utf8'});
+          const sections = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+          function inventory(base, head) {
+            if (![base, head].every(l => [2, 3].includes(l.lockfileVersion) && l.packages?.[''])) {
+              throw new Error('Built-in diagnostics require npm lockfile v2/v3; supply diagnostic-command for other formats');
+            }
+            const changes = new Map();
+            if ([base, head].some(l => Object.values(l.packages).some(p => p.link))) {
+              throw new Error('Workspace/link dependencies need a custom diagnostic-command');
+            }
+            for (const key of new Set([...Object.keys(base.packages), ...Object.keys(head.packages)])) {
+              if (!key) continue;
+              const before = base.packages[key], after = head.packages[key];
+              if (JSON.stringify(before) === JSON.stringify(after)) continue;
+              if (!key.includes('node_modules/')) throw new Error(`Unsupported workspace lock entry: ${key}`);
+              const name = key.slice(key.lastIndexOf('node_modules/') + 13);
+              if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name) || before?.link || after?.link) {
+                throw new Error(`Unsupported package entry: ${key}`);
+              }
+              if (!changes.has(name)) changes.set(name, []);
+              changes.get(name).push({key, before, after});
+            }
+            return changes;
+          }
+          function variant(base, head, manifest, baseManifest, changes, active) {
+            const lock = structuredClone(head), pkg = structuredClone(manifest);
+            for (const [name, entries] of changes) {
+              if (active.has(name)) continue;
+              for (const {key, before} of entries) {
+                if (before) lock.packages[key] = before;
+                else delete lock.packages[key];
+              }
+              for (const section of sections) {
+                for (const target of [pkg, lock.packages['']]) {
+                  const source = target === pkg ? baseManifest : base.packages[''];
+                  if (Object.hasOwn(source[section] || {}, name)) {
+                    target[section] ||= {};
+                    target[section][name] = source[section][name];
+                  } else if (target[section]) delete target[section][name];
+                }
+              }
+            }
+            // npm v2 duplicates the dependency graph in a legacy top-level field.
+            // ponytail: v2 diagnostics use the authoritative packages graph; npm ci accepts v3.
+            delete lock.dependencies;
+            lock.lockfileVersion = 3;
+            return {lock, pkg};
+          }
+          function isolate(names, trial, maxTrials) {
+            let rounds = 0;
+            const check = active => {
+              if (++rounds > maxTrials) throw new Error(`Cannot isolate: trial limit ${maxTrials} reached`);
+              const result = trial(active);
+              if (result === 'inconclusive') throw new Error('Cannot isolate: installation or an earlier verification step failed');
+              return result === 'fail';
+            };
+            if (!check(names)) throw new Error('Cannot isolate: original failure did not reproduce');
+            if (check([])) throw new Error('Cannot isolate: base dependency versions also fail');
+            const culprits = [];
+            const search = group => {
+              if (group.length === 1) { culprits.push(group[0]); return; }
+              const middle = Math.ceil(group.length / 2), left = group.slice(0, middle), right = group.slice(middle);
+              const a = check(left), b = check(right);
+              if (!a && !b) throw new Error(`Cannot isolate: interacting updates (${group.join(', ')})`);
+              if (a) search(left);
+              if (b) search(right);
+            };
+            search(names);
+            if (check(names.filter(n => !culprits.includes(n)))) throw new Error('Cannot isolate: reduced batch still fails');
+            return {culprits, rounds};
+          }
+          async function main(mode) {
+            const out = process.env.REPORT_DIR;
+            fs.mkdirSync(out, {recursive: true});
+            const lockfile = process.env.LOCKFILE;
+            const base = JSON.parse(gitFile(process.env.BASE_REF, lockfile)), head = read(lockfile);
+            const changes = inventory(base, head);
+            if (!changes.size) throw new Error('No changed npm packages found');
+            if (mode === 'diff') {
+              let message = '### Dependency diff and provenance\n\n';
+              let count = 0;
+              for (const [name, entries] of changes) {
+                const versions = entries.map(e => `${e.before?.version || '(added)'} → ${e.after?.version || '(removed)'}`);
+                message += `- ${name}: ${[...new Set(versions)].join(', ')}\n`;
+                // npm audit signatures verifies registry signatures and provenance when present.
+                // Absence is visible, never silently called verified provenance.
+                for (const e of entries) {
+                  if (++count > 20) { message += '  Provenance metadata not queried: diagnostic entry limit reached.\n'; break; }
+                  if (e.after?.version) {
+                    const metadata = cp.spawnSync('npm', ['view', `${name}@${e.after.version}`, 'dist.attestations', '--json'], {
+                      encoding: 'utf8', timeout: 15000, maxBuffer: 128 * 1024,
+                    });
+                    let provenance = null;
+                    try { provenance = JSON.parse(metadata.stdout || '{}').provenance; } catch { /* Report unknown metadata, not absence. */ }
+                    message += `  ${name}@${e.after.version} provenance: ${metadata.status !== 0 ? 'metadata query failed (unknown)' : provenance ? 'available; npm audit signatures must verify it' : 'MISSING from registry metadata (warning)'}\n`;
+                  }
+                  if (!e.before?.version || !e.after?.version || e.before.version === e.after.version) continue;
+                  const result = cp.spawnSync('npm', ['diff', '--ignore-scripts', '--diff', `${name}@${e.before.version}`, '--diff', `${name}@${e.after.version}`], {
+                    encoding: 'utf8', timeout: 15000, maxBuffer: 128 * 1024,
+                  });
+                  const text = (result.stdout || result.stderr || result.error?.message || '').replace(/```/g, "'''");
+                  message += `\n<details><summary>${name}: npm diff (exit ${result.status ?? 'timeout/error'})</summary>\n\n\`\`\`diff\n${text.slice(0, 1800)}\n\`\`\`\n</details>\n`;
+                }
+              }
+              message += '\nDiff output bounded to 20 entries / 1,800 characters each. Missing provenance is not proof of provenance.\n';
+              fs.writeFileSync(path.join(out, 'diff.json'), JSON.stringify({message: message.slice(0, 55000)}));
+              return;
+            }
+            const manifest = read('package.json'), baseManifest = JSON.parse(gitFile(process.env.BASE_REF, 'package.json'));
+            const commands = JSON.parse(process.env.COMMANDS);
+            const order = ['install', 'provenance', 'build', 'test', 'axi', 'smoke'];
+            const failed = process.env.FAILED_STEP, stop = order.indexOf(failed);
+            if (stop < 0) throw new Error('Unknown failing step');
+            const deadline = Date.now() + Number(process.env.TIMEOUT_MINUTES) * 60000;
+            const originals = new Map([lockfile, 'package.json'].map(f => [f, fs.readFileSync(f)]));
+            const write = active => {
+              const v = variant(base, head, manifest, baseManifest, changes, new Set(active));
+              fs.writeFileSync(lockfile, JSON.stringify(v.lock, null, 2) + '\n');
+              fs.writeFileSync('package.json', JSON.stringify(v.pkg, null, 2) + '\n');
+            };
+            try {
+              const result = isolate([...changes.keys()], active => {
+                if (Date.now() >= deadline) throw new Error('Cannot isolate: wall-clock limit reached');
+                cp.execFileSync('git', ['reset', '--hard', process.env.HEAD_REF], {stdio: 'inherit'});
+                cp.execFileSync('git', ['clean', '-ffdx'], {stdio: 'inherit'});
+                write(active);
+                for (let i = 0; i <= stop; i++) {
+                  const key = order[i] === 'axi' ? 'axi-verify-command' : `${order[i]}-command`;
+                  const command = commands[key];
+                  if (!command) continue;
+                  const run = cp.spawnSync('bash', ['-e', '-o', 'pipefail', '-c', command], {
+                    stdio: 'inherit', timeout: Math.max(1, deadline - Date.now()),
+                  });
+                  if (run.error || run.signal) throw new Error('Cannot isolate: trial timed out or was terminated');
+                  if (run.status !== 0) return i === stop ? 'fail' : 'inconclusive';
+                }
+                return 'pass';
+              }, Number(process.env.MAX_ROUNDS));
+              write([...changes.keys()].filter(n => !result.culprits.includes(n)));
+              const config = read('renovate.json');
+              config.packageRules ||= [];
+              config.packageRules.push({
+                description: 'Dependency verification isolated these updates; keep separate for review',
+                matchPackageNames: result.culprits, groupName: null, automerge: false,
+              });
+              const files = {'renovate.json': JSON.stringify(config, null, 2) + '\n'};
+              for (const f of originals.keys()) files[f] = fs.readFileSync(f, 'utf8');
+              fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({
+                ...result, files,
+                message: `Isolated: ${result.culprits.join(', ')} in ${result.rounds} trials. Reduced batch passed the previously failing step; a new commit MUST pass the entire workflow. Renovate will raise isolated packages separately after this configuration merges.`,
+              }));
+            } finally {
+              for (const [file, content] of originals) fs.writeFileSync(file, content);
+            }
+          }
+          module.exports = {inventory, variant, isolate};
+          if (require.main === module) main(process.argv[2]).catch(error => {
+            const out = process.env.REPORT_DIR;
+            fs.mkdirSync(out, {recursive: true});
+            fs.writeFileSync(path.join(out, process.argv[2] === 'diff' ? 'diff.json' : 'report.json'), JSON.stringify({message: error.message, culprits: []}));
+            console.error(error);
+            process.exitCode = 1;
+          });
+          // END DEPENDENCY ENGINE
+          ENGINE
+      # Immutable artifact uploaded BEFORE executing any code/dependency from the PR.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dependency-engine
+          path: ${{ runner.temp }}/dependency-engine.cjs
+          retention-days: 7
+      - name: Dependency diff (diagnostic failure remains visible)
+        continue-on-error: true
+        run: node "$RUNNER_TEMP/dependency-engine.cjs" diff
+      - name: Install
+        id: install
+        env:
+          COMMAND: ${{ inputs.install-command }}
+        run: bash -e -o pipefail -c "$COMMAND"
+      - name: Verify npm signatures and available provenance
+        id: provenance
+        env:
+          COMMAND: ${{ inputs.provenance-command }}
+        run: bash -e -o pipefail -c "$COMMAND"
+      - name: Build
+        id: build
+        env:
+          COMMAND: ${{ inputs.build-command }}
+        run: bash -e -o pipefail -c "$COMMAND"
+      - name: Full tests
+        id: test
+        env:
+          COMMAND: ${{ inputs.test-command }}
+        run: bash -e -o pipefail -c "$COMMAND"
+      - name: axi-verify placeholder — not yet shipped; no axi-verify coverage claimed
+        if: ${{ inputs.axi-verify-command == '' }}
+        run: echo 'axi-verify is not yet shipped. Placeholder only; no axi-verify coverage claimed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: axi-verify
+        id: axi
+        if: ${{ success() && inputs.axi-verify-command != '' }}
+        env:
+          COMMAND: ${{ inputs.axi-verify-command }}
+        run: bash -e -o pipefail -c "$COMMAND"
+      - name: Read-only real-binary smoke
+        id: smoke
+        env:
+          COMMAND: ${{ inputs.smoke-command }}
+        run: bash -e -o pipefail -c "$COMMAND"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() && steps.scope.outputs.eligible == 'true' }}
+        with:
+          name: dependency-diff
+          path: ${{ runner.temp }}/dependency-report/diff.json
+          if-no-files-found: error
+          retention-days: 7
+
+  bisect:
+    needs: verify
+    if: ${{ failure() && needs.verify.outputs.eligible == 'true' && needs.verify.outputs.failed-step != '' && github.event.pull_request.head.ref == 'renovate/weekly-non-major' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.bisect-timeout-minutes }}
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.sha }}
+      LOCKFILE: ${{ inputs.lockfile-path }}
+      FAILED_STEP: ${{ needs.verify.outputs.failed-step }}
+      COMMANDS: ${{ toJSON(inputs) }}
+      MAX_ROUNDS: ${{ inputs.bisect-max-rounds }}
+      TIMEOUT_MINUTES: ${{ inputs.bisect-timeout-minutes }}
+      DIAGNOSTIC_COMMAND: ${{ inputs.diagnostic-command }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dependency-engine
+          path: ${{ runner.temp }}/dependency-tools
+      - name: Bounded dependency bisect
+        run: |
+          export REPORT_DIR="$RUNNER_TEMP/dependency-bisect"
+          mkdir -p "$REPORT_DIR"
+          if [ -n "$DIAGNOSTIC_COMMAND" ]; then
+            timeout "${TIMEOUT_MINUTES}m" bash -e -o pipefail -c "$DIAGNOSTIC_COMMAND"
+          else
+            node "$RUNNER_TEMP/dependency-tools/dependency-engine.cjs" bisect
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() }}
+        with:
+          name: dependency-bisect
+          path: ${{ runner.temp }}/dependency-bisect/report.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  report:
+    needs: [verify, bisect]
+    if: ${{ always() && needs.verify.outputs.eligible == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # No checkout, npm or dependency code in this privileged job.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dependency-*
+          path: ${{ runner.temp }}/dependency-artifacts
+      - name: Comment results and split isolated packages
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          BISECT_RESULT: ${{ needs.bisect.result }}
+          LOCKFILE: ${{ inputs.lockfile-path }}
+          AUTO_SPLIT: ${{ inputs.auto-split }}
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          ARTIFACTS: ${{ runner.temp }}/dependency-artifacts
+        with:
+          script: |
+            // BEGIN DEPENDENCY REPORT
+            const fs = require('node:fs'), path = require('node:path');
+            const get = (dir, file) => {
+              const location = path.join(process.env.ARTIFACTS, dir, file);
+              if (!fs.existsSync(location)) return null;
+              if (fs.statSync(location).size > 4 * 1024 * 1024) throw new Error('Diagnostic artifact too large');
+              return JSON.parse(fs.readFileSync(location, 'utf8'));
+            };
+            const diff = get('dependency-diff', 'diff.json');
+            const result = get('dependency-bisect', 'report.json');
+            const pr = context.payload.pull_request;
+            let message = `<!-- dependency-verification -->\n## Dependency verification\nHead: ${pr.head.sha}\nVerification: ${process.env.VERIFY_RESULT}\n\n`;
+            message += diff?.message || 'Dependency diff unavailable: inspect the workflow logs.';
+            message += `\n\nBisect: ${result?.message || (process.env.VERIFY_RESULT === 'success' ? 'not needed' : 'could not isolate; inspect logs/timeout')}`;
+            const splitEnabled = process.env.AUTO_SPLIT === 'true';
+            if (splitEnabled && !process.env.RENOVATE_TOKEN) {
+              message += '\nAutomatic split requires the RENOVATE_TOKEN secret from an existing authorized automation App/PAT; GITHUB_TOKEN cannot trigger fresh CI.';
+              core.setFailed('auto-split is enabled but RENOVATE_TOKEN is missing; pass the secret or disable auto-split');
+            }
+            if (!splitEnabled) message += '\nAutomatic split is disabled (auto-split: false); diagnosis does not change this PR.';
+            if (process.env.BISECT_RESULT === 'success' && result?.culprits?.length && result.files) {
+              if (splitEnabled && process.env.RENOVATE_TOKEN) {
+                const {data: current} = await github.rest.pulls.get({...context.repo, pull_number: pr.number});
+                if (current.head.sha !== pr.head.sha || current.state !== 'open' ||
+                    current.user.login !== 'renovate[bot]' || current.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+                  throw new Error('PR changed during diagnosis; refusing stale split');
+                }
+                const allowed = new Set(['package.json', process.env.LOCKFILE, 'renovate.json']);
+                const tree = [];
+                for (const [file, content] of Object.entries(result.files)) {
+                  if (!allowed.has(file) || typeof content !== 'string') throw new Error('Split attempted non-dependency file');
+                  JSON.parse(content);
+                  tree.push({path: file, mode: '100644', type: 'blob', content});
+                }
+                // github-script's injected client is bound to GITHUB_TOKEN. Native fetch
+                // avoids its authentication hook overriding the explicit Renovate token.
+                const request = async (endpoint, body) => {
+                  const response = await fetch(`${process.env.GITHUB_API_URL}/repos/${context.repo.owner}/${context.repo.repo}/${endpoint}`, {
+                    method: 'POST', headers: {authorization: `Bearer ${process.env.RENOVATE_TOKEN}`,
+                      accept: 'application/vnd.github+json', 'content-type': 'application/json'},
+                    body: JSON.stringify(body),
+                  });
+                  const data = await response.json();
+                  if (!response.ok) throw new Error(`Split refused: HTTP ${response.status}: ${data.message}`);
+                  return data;
+                };
+                const {data: head} = await github.rest.git.getCommit({...context.repo, commit_sha: pr.head.sha});
+                const newTree = await request('git/trees', {base_tree: head.tree.sha, tree});
+                const commit = await request('git/commits', {
+                  message: 'fix(deps): isolate failing weekly updates', tree: newTree.sha, parents: [pr.head.sha],
+                  author: {name: 'github-actions[bot]', email: '41898282+github-actions[bot]@users.noreply.github.com'},
+                });
+                const response = await fetch(`${process.env.GITHUB_API_URL}/repos/${context.repo.owner}/${context.repo.repo}/git/refs/heads/${pr.head.ref}`, {
+                  method: 'PATCH', headers: {authorization: `Bearer ${process.env.RENOVATE_TOKEN}`,
+                    accept: 'application/vnd.github+json', 'content-type': 'application/json'},
+                  body: JSON.stringify({sha: commit.sha, force: false}),
+                });
+                if (!response.ok) throw new Error(`Split branch update refused: HTTP ${response.status}`);
+                message += `\nSplit commit: ${commit.sha}. Previous failure is NOT waived; awaiting full verification on the new SHA. Isolated packages remain separate and require review.`;
+              }
+            }
+            await core.summary.addRaw(message.slice(0, 60000)).write();
+            const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number: pr.number, per_page: 100});
+            const existing = comments.find(c => c.user.login === 'github-actions[bot]' && c.body?.startsWith('<!-- dependency-verification -->'));
+            if (existing) await github.rest.issues.updateComment({...context.repo, comment_id: existing.id, body: message.slice(0, 60000)});
+            else await github.rest.issues.createComment({...context.repo, issue_number: pr.number, body: message.slice(0, 60000)});
+            // END DEPENDENCY REPORT
