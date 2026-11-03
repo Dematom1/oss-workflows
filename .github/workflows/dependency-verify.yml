@@ -12,7 +12,7 @@
 # across old/new versions: provenance downgrades and unknown metadata fail; packages
 # without previous provenance produce named warnings. Invalid signatures fail.
 # lockfile-path defaults to package-lock.json (relative to repository root).
-# The built-in diff/bisect adapter supports npm lockfile v3, including stable paths.
+# The built-in diff/bisect adapter supports npm lockfile v3, including added and removed paths.
 # For another package manager supply diagnostic-command: it receives BASE_REF,
 # HEAD_REF, LOCKFILE, FAILED_STEP, COMMANDS (JSON), MAX_ROUNDS, TIMEOUT_MINUTES,
 # REPORT_DIR; it must write report.json {message,culprits,rounds}. The reporter
