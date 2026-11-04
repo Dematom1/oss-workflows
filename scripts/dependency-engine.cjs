@@ -2,7 +2,9 @@ const fs = require('node:fs');
 const cp = require('node:child_process');
 const path = require('node:path');
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
-const gitFile = (ref, file) => cp.execFileSync('git', ['show', `${ref}:${file}`], {encoding: 'utf8'});
+const gitFile = (ref, file) => cp.execFileSync('git', ['show', `${ref}:${file}`], {
+  encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+});
 const sections = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 function inventory(base, head) {
   if (![base, head].every(l => l.lockfileVersion === 3 && l.packages?.[''])) {
@@ -16,7 +18,6 @@ function inventory(base, head) {
     if (!key) continue;
     const before = base.packages[key], after = head.packages[key];
     if (JSON.stringify(before) === JSON.stringify(after)) continue;
-    if (!before || !after) throw new Error(`Unsupported dependency topology change: ${key}`);
     if (!key.includes('node_modules/')) throw new Error(`Unsupported workspace lock entry: ${key}`);
     const name = key.slice(key.lastIndexOf('node_modules/') + 13);
     if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name) || before?.link || after?.link) {
@@ -132,16 +133,9 @@ async function main(mode) {
       }
       return 'pass';
     }, Number(process.env.MAX_ROUNDS));
-    write([...changes.keys()].filter(n => !result.culprits.includes(n)));
-    const config = read('renovate.json');
-    config.packageRules ||= [];
-    config.packageRules.push({
-      description: 'Dependency verification isolated these updates; keep separate for review',
-      matchPackageNames: result.culprits, groupName: null, automerge: false,
-    });
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({
       ...result,
-      message: `Isolated: ${result.culprits.join(', ')} in ${result.rounds} trials. A separate Renovate rule will keep these packages out of future batches.`,
+      message: `Isolated: ${result.culprits.join(', ')} in ${result.rounds} trials. Diagnosis only; the PR is unchanged.`,
     }));
   } finally {
     for (const [file, content] of originals) fs.writeFileSync(file, content);
