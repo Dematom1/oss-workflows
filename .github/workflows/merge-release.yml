@@ -98,9 +98,18 @@ jobs:
               }
               // GitHub enforces required checks (including missing ones), reviews,
               // rulesets and mergeability. Never bypass or change those policies.
-              const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: number });
+              let current;
+              for (let attempt = 0; attempt < 5; attempt++) {
+                ({ data: current } = await github.rest.pulls.get({ ...repo, pull_number: number }));
+                if (current.mergeable !== null) break;
+                if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 3000));
+              }
               if (!eligible(current) || current.head.sha !== sha) {
                 await report('No merge: release PR identity or head changed during check inspection.');
+                return;
+              }
+              if (current.mergeable === null) {
+                await report(`No merge: GitHub has not finished computing mergeability for ${pr.html_url} at ${sha}; no merge was attempted.`);
                 return;
               }
               if (current.mergeable !== true || current.mergeable_state !== 'clean') {

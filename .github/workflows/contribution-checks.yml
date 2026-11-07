@@ -24,8 +24,8 @@ on:
         default: ""
 
 permissions:
-  contents: read
-  pull-requests: read
+  contents: read # Workflow runtime access; no caller code is checked out.
+  pull-requests: read # Read PR metadata, commits, and changed files through the API.
 
 jobs:
   classify:
