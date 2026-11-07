@@ -3,6 +3,14 @@
 Shared GitHub Actions workflows and presets for Dematom1 open-source repositories.
 Callers outside Dematom1, including `dematom-labs/workflows`, use the same interface.
 
+## Contribution checks interface
+
+Reusable workflow: `.github/workflows/contribution-checks.yml`. Call it from a thin caller workflow that owns `pull_request` events and concurrency. Pin `uses` to this repository's full 40-character commit SHA. Pass `release-bot-login` as the exact release App bot login; leave it empty when no release-PR exemption is configured. The workflow emits terminal checks for PR title, no-mistakes attestation, and generated-file protection. It uses read-only permissions and does not check out caller code.
+
+## Weekly release merge interface
+
+Reusable workflow: `.github/workflows/merge-release.yml`. Pin `uses` to this repository's full 40-character commit SHA. Pass `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` explicitly as secrets. `dry-run` defaults to `true`; set it to `false` only for a scheduled release caller authorized to merge. The workflow scopes its App token to the calling repository and only merges the single eligible, fully green release-please PR after rechecking its identity and head SHA.
+
 ## Dependency verification interface
 
 Reusable workflow: `.github/workflows/dependency-verify.yml`.
