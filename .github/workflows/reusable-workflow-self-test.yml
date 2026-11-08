@@ -1,0 +1,19 @@
+name: Reusable workflow self-test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+
+jobs:
+  merge-dry-run:
+    uses: ./.github/workflows/merge-release.yml
+    with:
+      dry-run: true
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

@@ -5,7 +5,7 @@ Callers outside Dematom1, including `dematom-labs/workflows`, use the same inter
 
 ## Contribution checks interface
 
-Reusable workflow: `.github/workflows/contribution-checks.yml`. Call it from a thin caller workflow that owns `pull_request` events and concurrency. Pin `uses` to this repository's full 40-character commit SHA. Pass `release-bot-login` as the exact release App bot login; leave it empty when no release-PR exemption is configured. The workflow emits terminal checks for PR title, no-mistakes attestation, and generated-file protection. It uses read-only permissions and does not check out caller code. The caller must grant at least `contents: read` and `pull-requests: read`.
+Reusable workflow: `.github/workflows/contribution-checks.yml`. Call it from a thin caller workflow that owns `pull_request` events and concurrency. Include `opened`, `synchronize`, `reopened`, and `edited` so title/body edits rerun checks. Pin `uses` to this repository's full 40-character commit SHA. Pass `release-bot-login` as the exact release App bot login; leave it empty when no release-PR exemption is configured. The workflow emits terminal checks for PR title, no-mistakes attestation, and generated-file protection. It uses read-only permissions and does not check out caller code. The caller must grant at least `contents: read` and `pull-requests: read`.
 
 ## Weekly release merge interface
 

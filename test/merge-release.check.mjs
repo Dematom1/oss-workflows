@@ -7,6 +7,7 @@ const root = new URL("..", import.meta.url);
 const parse = file => JSON.parse(execFileSync("ruby", ["-rpsych", "-rjson", "-e", "puts JSON.generate(Psych.load_file(ARGV[0], permitted_classes: [], aliases: false))", new URL(file, root).pathname], { encoding: "utf8" }));
 const contribution = parse(".github/workflows/contribution-checks.yml");
 const release = parse(".github/workflows/merge-release.yml");
+const selfTest = parse(".github/workflows/reusable-workflow-self-test.yml");
 const on = workflow => workflow.on ?? workflow[true];
 const script = release.jobs.merge.steps.find(step => step.with?.script).with.script;
 
@@ -63,6 +64,13 @@ test("shared workflows expose caller contracts", () => {
   assert.equal(on(release).workflow_call.inputs["dry-run"].default, true);
   assert.deepEqual(on(release).workflow_call.secrets, { RELEASE_APP_ID: { required: true }, RELEASE_APP_PRIVATE_KEY: { required: true } });
   assert.equal(release.permissions.contents, "read");
+  assert.ok(on(selfTest)?.workflow_dispatch);
+  assert.equal(selfTest.jobs["merge-dry-run"].uses, "./.github/workflows/merge-release.yml");
+  assert.equal(selfTest.jobs["merge-dry-run"].with["dry-run"], true);
+  assert.deepEqual(selfTest.jobs["merge-dry-run"].secrets, {
+    RELEASE_APP_ID: "${{ secrets.RELEASE_APP_ID }}",
+    RELEASE_APP_PRIVATE_KEY: "${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
+  });
 });
 
 test("scheduled token scope resolves to the fixture repository", () => {

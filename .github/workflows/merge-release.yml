@@ -39,6 +39,8 @@ jobs:
           repositories: ${{ steps.repository.outputs.name }}
           permission-contents: write
           permission-pull-requests: write
+      - name: Report App token repository scope
+        run: echo "App token scoped to ${{ steps.repository.outputs.name }}." >> "$GITHUB_STEP_SUMMARY"
 
       # v8.0.0. No checkout: sibling callers execute this pinned workflow's code.
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
