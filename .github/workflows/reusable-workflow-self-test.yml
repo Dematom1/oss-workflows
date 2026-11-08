@@ -1,0 +1,28 @@
+name: Reusable workflow self-test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    paths:
+      - .github/workflows/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+
+jobs:
+  contribution:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/contribution-checks.yml
+
+  merge-dry-run:
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo != null && github.event.pull_request.head.repo.full_name == github.repository)
+    uses: ./.github/workflows/merge-release.yml
+    with:
+      dry-run: true
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
