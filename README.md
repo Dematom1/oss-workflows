@@ -9,7 +9,7 @@ Reusable workflow: `.github/workflows/contribution-checks.yml`. Call it from a t
 
 ## Weekly release merge interface
 
-Reusable workflow: `.github/workflows/merge-release.yml`. Pin `uses` to this repository's full 40-character commit SHA. Pass `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` explicitly as secrets. `dry-run` defaults to `true`; set it to `false` only for a scheduled release caller authorized to merge. The workflow scopes its App token to the calling repository and only merges the single eligible, fully green release-please PR after rechecking its identity and head SHA.
+Reusable workflow: `.github/workflows/merge-release.yml`. Pin `uses` to this repository's full 40-character commit SHA. Pass `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` explicitly as secrets, and grant the caller `checks: read` and `statuses: read` permissions. `dry-run` defaults to `true`; set it to `false` only for a scheduled release caller authorized to merge. The workflow scopes its App token to the calling repository and only merges the single eligible, fully green release-please PR after rechecking its identity and head SHA.
 
 ## Dependency verification interface
 
