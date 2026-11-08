@@ -65,6 +65,10 @@ test("shared workflows expose caller contracts", () => {
   assert.deepEqual(on(release).workflow_call.secrets, { RELEASE_APP_ID: { required: true }, RELEASE_APP_PRIVATE_KEY: { required: true } });
   assert.equal(release.permissions.contents, "read");
   assert.ok(Object.hasOwn(on(selfTest) ?? {}, "workflow_dispatch"));
+  assert.deepEqual(on(selfTest).pull_request.types, ["opened", "synchronize", "reopened", "edited"]);
+  assert.deepEqual(on(selfTest).pull_request.paths, [".github/workflows/**"]);
+  assert.equal(selfTest.jobs.contribution.uses, "./.github/workflows/contribution-checks.yml");
+  assert.equal(selfTest.jobs.contribution.if, "github.event_name == 'pull_request'");
   assert.equal(selfTest.jobs["merge-dry-run"].uses, "./.github/workflows/merge-release.yml");
   assert.equal(selfTest.jobs["merge-dry-run"].with["dry-run"], true);
   assert.deepEqual(selfTest.jobs["merge-dry-run"].secrets, {

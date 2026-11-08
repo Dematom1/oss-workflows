@@ -1,6 +1,10 @@
 name: Reusable workflow self-test
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    paths:
+      - .github/workflows/**
   workflow_dispatch:
 
 permissions:
@@ -10,6 +14,10 @@ permissions:
   statuses: read
 
 jobs:
+  contribution:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/contribution-checks.yml
+
   merge-dry-run:
     uses: ./.github/workflows/merge-release.yml
     with:
