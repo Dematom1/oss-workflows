@@ -123,7 +123,7 @@ jobs:
               flags.push('F-01 (fork or untrusted author)');
             }
             const sensitive = path => path.startsWith('.github/') ||
-              /(^|\/)(?:\.?release-please-config\.json|\.release-please-manifest\.json|renovate\.json5?|\.renovaterc(?:\.json5?)?)$/.test(path) ||
+              /(^|\/)(?:\.?release-please-config\.json|\.release-please-manifest\.json|renovate\.json5?|\.renovaterc(?:\.json5?|\.ya?ml)?)$/.test(path) ||
               path.startsWith('renovate/') || path.startsWith('.renovate/') ||
               /(^|\/)(?:[^/]*\.lock|[^/]*\.lockb|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|go\.sum|packages\.lock\.json|flake\.lock)$/.test(path);
             if (files.length !== pr.changed_files || files.some(file =>
@@ -154,7 +154,7 @@ jobs:
               flags.push('F-04 (missing, malformed, incomplete, or stale attestation)');
             }
             if (steps.some(step => step?.step === 'test' &&
-                typeof step.override_reason === 'string' && step.override_reason.trim())) {
+                Object.hasOwn(step, 'override_reason') && step.override_reason !== '' && step.override_reason !== null)) {
               flags.push('F-05 (test override reason)');
             }
             if (attestation?.live_validation?.verdict !== 'go') {

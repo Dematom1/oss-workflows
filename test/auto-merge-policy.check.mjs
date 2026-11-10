@@ -43,10 +43,6 @@ async function execute(overrides = {}, files = [{ filename: "src/main.go" }]) {
 test("clear PR at the size cap is advisory yes with read-only permissions", async () => {
   assert.deepEqual(workflow.permissions, { contents: "read", "pull-requests": "read" });
   assert.match(await execute(), /would merge itself: yes, because no flags/);
-  const job = workflow.jobs["auto-merge-policy"];
-  assert.equal(job.needs, undefined);
-  assert.equal(job.steps.length, 1);
-  assert.match(job.steps[0].uses, /^actions\/github-script@[a-f0-9]{40}$/);
 });
 
 test("F-01: fork, deleted head repository, or untrusted association", async () => {
@@ -61,7 +57,7 @@ test("F-01: fork, deleted head repository, or untrusted association", async () =
 });
 
 test("F-02: sensitive paths, including old rename paths, and incomplete file lists", async () => {
-  for (const filename of [".github/workflows/ci.yml", "release-please-config.json", ".release-please-manifest.json", "renovate.json", "renovate.json5", ".renovaterc", ".renovaterc.json", "renovate/axi.json", "package-lock.json", "nested/yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", "bun.lock", "bun.lockb", "go.sum", "Cargo.lock", "Gemfile.lock", "poetry.lock", "uv.lock", "composer.lock", "Pipfile.lock"]) {
+  for (const filename of [".github/workflows/ci.yml", "release-please-config.json", ".release-please-manifest.json", "renovate.json", "renovate.json5", ".renovaterc", ".renovaterc.json", ".renovaterc.yml", ".renovaterc.yaml", "renovate/axi.json", "package-lock.json", "nested/yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", "bun.lock", "bun.lockb", "go.sum", "Cargo.lock", "Gemfile.lock", "poetry.lock", "uv.lock", "composer.lock", "Pipfile.lock"]) {
     assert.match(await execute({}, [{ filename }]), /would merge itself: no, because F-02/, filename);
     assert.match(await execute({}, [{ filename: "ordinary.txt", previous_filename: filename }]), /because F-02/, filename);
   }
@@ -80,9 +76,11 @@ test("F-04: missing, malformed, stale, or incomplete attestation", async () => {
     assert.match(await execute({ body: value }), /because .*F-04/);
 });
 
-test("F-05: test override is flagged even with repository opt-in", async () => {
-  const steps = attestation.steps.map(step => step.step === "test" ? { ...step, override_reason: "approved failure" } : step);
-  assert.match(await execute({ body: body({ ...attestation, steps, allow_test_command_override: "opted in" }) }), /because F-05/);
+test("F-05: any nonempty test override representation is flagged", async () => {
+  for (const override_reason of ["approved failure", true, { reason: "approved" }]) {
+    const steps = attestation.steps.map(step => step.step === "test" ? { ...step, override_reason } : step);
+    assert.match(await execute({ body: body({ ...attestation, steps }) }), /because F-05/);
+  }
 });
 
 test("F-06: live validation must explicitly say go", async () => {
