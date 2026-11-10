@@ -123,7 +123,7 @@ for (const failure of ['', 'vulnerable', 'mod download', 'mod verify', 'install'
     if (failure === 'vulnerable') assert.match(result.stderr, /reachable vulnerability/);
     if (!failure || failure === 'vulnerable') assert.deepEqual(calls.map(c => c.args), [
       ['mod', 'download', 'all'], ['mod', 'download', 'all'], ['mod', 'verify'],
-      ['install', 'golang.org/x/vuln/cmd/govulncheck@v1.9.0'], ['govulncheck', './...'],
+      ['install', 'golang.org/x/vuln/cmd/govulncheck@v1.9.0'], ['govulncheck', './...'], ['clean', '-modcache'],
     ]);
     const first = calls[0];
     assert.notEqual(first.cwd, repo);

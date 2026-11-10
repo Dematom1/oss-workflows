@@ -6,7 +6,7 @@ const path = require('node:path');
 const goEnv = {
   ...process.env, GOENV: 'off', GOWORK: 'off', GOFLAGS: '', GOTOOLCHAIN: 'local',
   GOPROXY: 'https://proxy.golang.org', GOSUMDB: 'sum.golang.org',
-  GOPRIVATE: '', GONOPROXY: 'none', GONOSUMDB: 'none', GOINSECURE: '',
+  GOPRIVATE: '', GONOPROXY: 'none', GONOSUMDB: 'none', GOINSECURE: '', GOTELEMETRY: 'off',
 };
 const exec = (command, args, options = {}) => cp.execFileSync(command, args, {
   env: goEnv, encoding: 'utf8', timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024, ...options,
@@ -65,6 +65,7 @@ function verify() {
     // govulncheck's default source mode fails on reachable vulnerabilities, not imports alone.
     exec(path.join(env.GOBIN, 'govulncheck'), ['./...'], { env, stdio: 'inherit' });
   } finally {
+    exec('go', ['clean', '-modcache'], { env });
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
