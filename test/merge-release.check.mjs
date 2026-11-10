@@ -59,7 +59,7 @@ test("shared workflows expose caller contracts", () => {
   assert.ok(on(contribution)?.workflow_call);
   assert.equal(on(contribution).workflow_call.inputs["release-bot-login"].type, "string");
   assert.equal(contribution.permissions["pull-requests"], "read");
-  assert.deepEqual(Object.keys(contribution.jobs).sort(), ["classify", "generated-files", "no-mistakes", "title"]);
+  assert.deepEqual(Object.keys(contribution.jobs).sort(), ["auto-merge-policy", "classify", "generated-files", "no-mistakes", "title"]);
   assert.ok(on(release)?.workflow_call);
   assert.equal(on(release).workflow_call.inputs["dry-run"].default, true);
   assert.deepEqual(on(release).workflow_call.secrets, { RELEASE_APP_ID: { required: true }, RELEASE_APP_PRIVATE_KEY: { required: true } });
