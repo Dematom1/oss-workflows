@@ -145,3 +145,7 @@ actionlint .github/workflows/dependency-verify.yml
 
 Tests use Node's standard library and temporary fixture repositories. Go tests also need Go for native `go.mod` parsing.
 Downloads and vulnerability checks use offline command fixtures. No npm install or network access is needed.
+
+## License
+
+Licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE).
