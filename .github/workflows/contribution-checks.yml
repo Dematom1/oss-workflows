@@ -3,8 +3,8 @@ name: Contribution checks
 # Shared implementation of the cheap pull request policy checks for the AXI
 # tools: conventional title, no-mistakes attestation, and generated-file
 # protection, plus an advisory auto-merge policy summary. Each tool calls it
-# from a thin `contribution.yml` that owns the
-# pull_request events and concurrency; sibling tools pin it by commit SHA.
+# from a thin `contribution.yml` that owns the pull_request events and
+# concurrency; sibling tools pin it by commit SHA.
 #
 # Every job reads live PR metadata through the API and never checks out or
 # executes contributed code, so it needs no secrets, write access or OIDC.
