@@ -65,8 +65,13 @@ function verify() {
     // govulncheck's default source mode fails on reachable vulnerabilities, not imports alone.
     exec(path.join(env.GOBIN, 'govulncheck'), ['./...'], { env, stdio: 'inherit' });
   } finally {
-    exec('go', ['clean', '-modcache'], { env });
-    fs.rmSync(dir, { recursive: true, force: true });
+    for (const cleanup of [
+      () => exec('go', ['clean', '-modcache'], { env }),
+      () => fs.rmSync(dir, { recursive: true, force: true }),
+    ]) {
+      try { cleanup(); }
+      catch (error) { console.warn(`Go verification cleanup failed: ${error.message}`); }
+    }
   }
 }
 

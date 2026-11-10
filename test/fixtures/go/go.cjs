@@ -10,7 +10,8 @@ if (args[0] === 'mod' && args[1] === 'edit') {
 }
 fs.appendFileSync(process.env.FIXTURE_LOG, JSON.stringify({ args, cwd: process.cwd(), env: process.env,
   hasSum: fs.existsSync('go.sum'), hasCache: fs.existsSync(process.env.GOMODCACHE) }) + '\n');
-if (process.env.FIXTURE_FAIL === (args[0] === 'install' ? 'install' : args.slice(0, 2).join(' '))) process.exit(1);
+if (process.env.FIXTURE_FAIL === (args[0] === 'install' ? 'install' : args.slice(0, 2).join(' ')) ||
+    (process.env.FIXTURE_CLEANUP_FAIL === 'true' && args[0] === 'clean')) process.exit(1);
 if (args[0] === 'install') {
   fs.mkdirSync(process.env.GOBIN, { recursive: true });
   fs.copyFileSync(process.env.FIXTURE_SCANNER, path.join(process.env.GOBIN, 'govulncheck'));

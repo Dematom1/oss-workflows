@@ -94,8 +94,10 @@ test('shipped Go diff summarizes go.mod and handles go.sum-only changes without 
   assert.match(result.stdout, /No go.mod module version changes/);
 }));
 
-for (const failure of ['', 'vulnerable', 'mod download', 'mod verify', 'install', 'local replacement']) {
-  test(`Go verification CLI ${failure ? `fails closed: ${failure}` : 'checks proxy, sums, integrity and reachable vulnerabilities'}`, () => repository(({ root, repo, env }) => {
+for (const failure of ['', 'vulnerable', 'mod download', 'mod verify', 'install', 'local replacement', 'cleanup', 'vulnerable+cleanup']) {
+  test(`Go verification CLI ${failure ? `handles failure: ${failure}` : 'checks proxy, sums, integrity and reachable vulnerabilities'}`, () => repository(({ root, repo, env }) => {
+    const vulnerable = failure.startsWith('vulnerable');
+    const cleanupFailure = failure.includes('cleanup');
     const bin = join(root, 'bin'), log = join(root, 'commands.jsonl');
     mkdirSync(bin);
     copyFileSync(fixture('go.cjs'), join(bin, 'go'));
@@ -108,11 +110,11 @@ for (const failure of ['', 'vulnerable', 'mod download', 'mod verify', 'install'
     const result = spawnSync(process.execPath, [cli, 'verify'], { cwd: repo, encoding: 'utf8', env: {
       ...env, PATH: `${bin}:${process.env.PATH}`, REAL_GO: join(goroot, 'bin', 'go'), FIXTURE_LOG: log,
       FIXTURE_SCANNER: fixture('govulncheck.cjs').pathname, FIXTURE_FAIL: failure,
-      FIXTURE_VULNERABLE: String(failure === 'vulnerable'),
+      FIXTURE_VULNERABLE: String(vulnerable), FIXTURE_CLEANUP_FAIL: String(cleanupFailure),
       GOPROXY: 'direct', GOSUMDB: 'off', GOPRIVATE: '*', GONOSUMDB: '*', GONOPROXY: '*',
       GOFLAGS: '-mod=vendor', GOWORK: '/untrusted/go.work', GOINSECURE: '*',
     } });
-    if (failure) assert.notEqual(result.status, 0, result.stdout);
+    if (failure && failure !== 'cleanup') assert.notEqual(result.status, 0, result.stdout);
     else assert.equal(result.status, 0, result.stderr);
     if (failure === 'local replacement') {
       assert.match(result.stderr, /Local Go replacements/);
@@ -120,8 +122,12 @@ for (const failure of ['', 'vulnerable', 'mod download', 'mod verify', 'install'
       return;
     }
     const calls = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    if (failure === 'vulnerable') assert.match(result.stderr, /reachable vulnerability/);
-    if (!failure || failure === 'vulnerable') assert.deepEqual(calls.map(c => c.args), [
+    if (vulnerable) {
+      assert.match(result.stderr, /reachable vulnerability/);
+      assert.match(result.stderr.trim().split('\n').at(-1), /govulncheck \.\/\.\.\.$/, 'original scan error must not be replaced by cleanup errors');
+    }
+    if (cleanupFailure) assert.match(result.stderr, /cleanup failed/);
+    if (!failure || vulnerable || cleanupFailure) assert.deepEqual(calls.map(c => c.args), [
       ['mod', 'download', 'all'], ['mod', 'download', 'all'], ['mod', 'verify'],
       ['install', 'golang.org/x/vuln/cmd/govulncheck@v1.9.0'], ['govulncheck', './...'], ['clean', '-modcache'],
     ]);

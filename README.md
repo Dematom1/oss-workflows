@@ -124,7 +124,7 @@ The Go caller's `renovate.json` uses the Go preset:
 The Go preset limits updates to the `gomod` manager and sets `postUpdateOptions: ["gomodTidy"]`.
 It uses the same release age, weekly schedule, grouping, and major-update review policy as the npm preset.
 
-The npm manager restriction keeps the pilot within the dependency-file allowlist.
+The manager restriction (`npm` or `gomod`) keeps the pilot within the dependency-file allowlist.
 The generic preset alone does not authorize Action or workflow updates through a dependency-only gate.
 
 The caller's existing "PR must be raised via no-mistakes" check remains required.
