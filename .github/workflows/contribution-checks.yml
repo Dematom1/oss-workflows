@@ -2,7 +2,8 @@ name: Contribution checks
 
 # Shared implementation of the cheap pull request policy checks for the AXI
 # tools: conventional title, no-mistakes attestation, and generated-file
-# protection. Each tool calls it from a thin `contribution.yml` that owns the
+# protection, plus an advisory auto-merge policy summary. Each tool calls it
+# from a thin `contribution.yml` that owns the
 # pull_request events and concurrency; sibling tools pin it by commit SHA.
 #
 # Every job reads live PR metadata through the API and never checks out or
@@ -100,6 +101,69 @@ jobs:
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@f6441c96c352a18b9cadcaef6b6c7017e9ac3970 # v1.80.1
         with:
           exempt-authors: dependabot[bot]
+
+  # Shadow only: do not make this a required check. No merge authority.
+  auto-merge-policy:
+    name: Auto-merge policy (shadow)
+    runs-on: ubuntu-latest
+    steps:
+      # v8.0.0
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: |
+            // Tune this cap from observations during the shadow period.
+            const MAX_DIFF_LINES = 500;
+            const repo = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            const { data: pr } = await github.rest.pulls.get({ ...repo, pull_number });
+            const files = await github.paginate(github.rest.pulls.listFiles, { ...repo, pull_number, per_page: 100 });
+            const flags = [];
+            if (pr.head.repo?.full_name !== `${repo.owner}/${repo.repo}` ||
+                !['OWNER', 'MEMBER', 'COLLABORATOR'].includes(pr.author_association)) {
+              flags.push('F-01 (fork or untrusted author)');
+            }
+            const sensitive = path => path.startsWith('.github/') ||
+              /(^|\/)(?:\.?release-please-config\.json|\.release-please-manifest\.json|renovate\.json5?|\.renovaterc(?:\.json5?)?)$/.test(path) ||
+              path.startsWith('renovate/') || path.startsWith('.renovate/') ||
+              /(^|\/)(?:[^/]*\.lock|[^/]*\.lockb|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|go\.sum|packages\.lock\.json|flake\.lock)$/.test(path);
+            if (files.length !== pr.changed_files || files.some(file =>
+                [file.filename, file.previous_filename].filter(Boolean).some(sensitive))) {
+              flags.push('F-02 (sensitive paths or incomplete file list)');
+            }
+            if (pr.additions + pr.deletions > MAX_DIFF_LINES) {
+              flags.push('F-03 (diff exceeds 500 added+deleted lines)');
+            }
+            // Same v1 marker and structural fields as the pinned no-mistakes gate.
+            // This is author-asserted evidence, not a signature or risk verdict.
+            const prefix = '<!-- no-mistakes-pipeline-attestation:v1 ';
+            const body = pr.body || '';
+            const start = body.indexOf(prefix);
+            const end = body.indexOf(' -->', start + prefix.length);
+            let attestation;
+            try {
+              if (start >= 0 && end >= 0) attestation = JSON.parse(body.slice(start + prefix.length, end));
+            } catch { /* Malformed author input is a flag, not a job failure. */ }
+            const steps = Array.isArray(attestation?.steps) ? attestation.steps : [];
+            const validSteps = steps.every(step => step && typeof step.step === 'string' &&
+              step.step !== '' && typeof step.status === 'string');
+            const status = new Map(steps.filter(step => step && typeof step === 'object').map(step => [step.step, step.status]));
+            if (!attestation || typeof attestation.head_sha !== 'string' ||
+                !pr.head.sha || attestation.head_sha !== pr.head.sha ||
+                !Array.isArray(attestation.steps) || !validSteps ||
+                !['review', 'test', 'document'].every(step => status.get(step) === 'completed')) {
+              flags.push('F-04 (missing, malformed, incomplete, or stale attestation)');
+            }
+            if (steps.some(step => step?.step === 'test' &&
+                typeof step.override_reason === 'string' && step.override_reason.trim())) {
+              flags.push('F-05 (test override reason)');
+            }
+            if (attestation?.live_validation?.verdict !== 'go') {
+              flags.push('F-06 (live validation absent or not go)');
+            }
+            const verdict = `would merge itself: ${flags.length ? 'no' : 'yes'}, because ${flags.length ? flags.join('; ') : 'no flags'}`;
+            core.info(verdict);
+            await core.summary.addHeading('Auto-merge policy (shadow)').addRaw(verdict)
+              .addRaw('\n\nAdvisory only; no approval or merge authority. F-07–F-09 are not evaluated.').write();
 
   generated-files:
     name: Generated files must not be hand-edited
