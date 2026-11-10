@@ -9,7 +9,11 @@ if (!/^(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_.-]+$/.test(process.env.LOCKFILE) ||
     process.env.LOCKFILE.split('/').some(s => s === '..' || s === '.') ||
     process.env.LOCKFILE.startsWith('.github/')) throw new Error('Unsafe lockfile path');
 const commands = JSON.parse(process.env.COMMANDS);
-for (const key of ['install-command', 'build-command', 'test-command', 'smoke-command', 'provenance-command']) {
+const ecosystem = process.env.ECOSYSTEM || 'npm';
+if (!['npm', 'go'].includes(ecosystem)) throw new Error('ecosystem must be npm or go');
+const required = ['install-command', 'build-command', 'test-command', 'smoke-command'];
+if (ecosystem === 'npm') required.push('provenance-command');
+for (const key of required) {
   if (!commands[key]?.trim()) throw new Error(`${key} must not be empty`);
 }
 const rounds = Number(process.env.MAX_ROUNDS), minutes = Number(process.env.TIMEOUT_MINUTES);
@@ -18,7 +22,9 @@ if (!Number.isInteger(rounds) || rounds < 1 || rounds > 32 ||
 const files = await github.paginate(github.rest.pulls.listFiles, {
   ...context.repo, pull_number: pr.number, per_page: 100,
 });
-const allowed = new Set(['package.json', process.env.LOCKFILE, 'renovate.json']);
+const allowed = new Set(ecosystem === 'go'
+  ? ['go.mod', 'go.sum', 'renovate.json']
+  : ['package.json', process.env.LOCKFILE, 'renovate.json']);
 if (!files.length || files.length !== pr.changed_files || files.some(f =>
     !allowed.has(f.filename) || (f.previous_filename && !allowed.has(f.previous_filename)))) {
   throw new Error('Changed files are incomplete or outside dependency-only scope');
