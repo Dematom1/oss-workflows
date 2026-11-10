@@ -18,7 +18,8 @@ const contentAt = async (file, ref) => {
   if (content.length > 8 * 1024 * 1024) throw new Error('Cannot validate dependency lockfile');
   return JSON.parse(content.toString('utf8'));
 };
-const [baseLock, headLock] = await Promise.all([
+const isGo = process.env.ECOSYSTEM === 'go';
+const [baseLock, headLock] = isGo ? [{}, {}] : await Promise.all([
   contentAt(process.env.LOCKFILE, pr.base.sha), contentAt(process.env.LOCKFILE, pr.head.sha),
 ]);
 const changed = new Map();
@@ -33,15 +34,16 @@ for (const key of new Set([...Object.keys(baseLock.packages || {}), ...Object.ke
 }
 const clean = value => String(value).replace(/[\r\n`<>]/g, '_').slice(0, 100);
 let message = `<!-- dependency-verification -->\n## Dependency verification\nHead: ${pr.head.sha}\nVerification: ${process.env.VERIFY_RESULT}\n\n### Dependency changes\n`;
-message += [...changed].slice(0, 50).map(([name, versions]) => `- \`${clean(name)}\`: \`${clean(versions.before)} → ${clean(versions.after)}\``).join('\n') || '- No package version changes found.';
+message += [...changed].slice(0, 50).map(([name, versions]) => `- \`${clean(name)}\`: \`${clean(versions.before)} → ${clean(versions.after)}\``).join('\n') || (isGo ? '- Module version changes are shown in the untrusted Go diagnostic below.' : '- No package version changes found.');
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/@/g, '@&#8203;');
-const rawDiff = diff?.message || 'npm diff output unavailable';
-message += `\n\n<details><summary>Untrusted npm diff diagnostic</summary><pre>${escape(rawDiff.slice(0, 30000))}${rawDiff.length > 30000 ? `\n[truncated ${rawDiff.length - 30000} characters]` : ''}</pre></details>`;
-const validResult = result && Object.keys(result).every(key => ['culprits', 'rounds', 'message'].includes(key)) &&
+const label = isGo ? 'Go module' : 'npm diff';
+const rawDiff = diff?.message || `${label} output unavailable`;
+message += `\n\n<details><summary>Untrusted ${label} diagnostic</summary><pre>${escape(rawDiff.slice(0, 30000))}${rawDiff.length > 30000 ? `\n[truncated ${rawDiff.length - 30000} characters]` : ''}</pre></details>`;
+const validResult = !isGo && result && Object.keys(result).every(key => ['culprits', 'rounds', 'message'].includes(key)) &&
   Array.isArray(result.culprits) && Number.isInteger(result.rounds) && result.rounds > 0 &&
   new Set(result.culprits).size === result.culprits.length && result.culprits.every(name => changed.has(name));
 const validCulprits = validResult ? result.culprits : [];
-message += `\n\nBisect: ${process.env.VERIFY_RESULT === 'success' ? 'not needed' : validCulprits.length ? `isolated ${validCulprits.map(clean).join(', ')} in ${result.rounds} trials` : 'could not isolate; inspect workflow logs/timeout'}`;
+message += `\n\nBisect: ${isGo ? 'not supported for Go modules' : process.env.VERIFY_RESULT === 'success' ? 'not needed' : validCulprits.length ? `isolated ${validCulprits.map(clean).join(', ')} in ${result.rounds} trials` : 'could not isolate; inspect workflow logs/timeout'}`;
 if (validCulprits.length) message += '\nAutomatic split is deferred; bisect diagnosis does not change this PR.';
 await core.summary.addRaw(message.slice(0, 60000)).write();
 const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number: pr.number, per_page: 100});

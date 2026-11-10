@@ -11,7 +11,9 @@
 # provenance-command defaults to npm audit signatures. Registry metadata is compared
 # across old/new versions: provenance downgrades and unknown metadata fail; packages
 # without previous provenance produce named warnings. Invalid signatures fail.
-# lockfile-path defaults to package-lock.json (relative to repository root).
+# ecosystem defaults to npm; go uses root go.mod/go.sum, public proxy/checksums,
+# go mod verify and source-mode govulncheck. Go bisect is not supported.
+# lockfile-path defaults to package-lock.json (relative to repository root; npm only).
 # The built-in diff/bisect adapter supports npm lockfile v3, including added and removed paths.
 # For another package manager supply diagnostic-command: it receives BASE_REF,
 # HEAD_REF, LOCKFILE, FAILED_STEP, COMMANDS (JSON), MAX_ROUNDS, TIMEOUT_MINUTES,
@@ -36,6 +38,9 @@ on:
       shared-script-ref:
         type: string
         required: true
+      ecosystem:
+        type: string
+        default: npm
       install-command:
         type: string
         required: true
@@ -89,6 +94,7 @@ jobs:
       failed-step: >-
         ${{ steps.install.outcome == 'failure' && 'install' ||
             steps.provenance.outcome == 'failure' && 'provenance' ||
+            steps.go-provenance.outcome == 'failure' && 'provenance' ||
             steps.build.outcome == 'failure' && 'build' ||
             steps.test.outcome == 'failure' && 'test' ||
             steps.axi.outcome == 'failure' && 'axi' ||
@@ -98,6 +104,7 @@ jobs:
       HEAD_REF: ${{ github.event.pull_request.head.sha }}
       LOCKFILE: ${{ inputs.lockfile-path }}
       COMMANDS: ${{ toJSON(inputs) }}
+      ECOSYSTEM: ${{ inputs.ecosystem }}
     steps:
       - name: Validate immutable shared script ref
         env:
@@ -120,7 +127,7 @@ jobs:
           script: |
             await require(process.env.SHARED_TOOL_DIR + '/dependency-scope.cjs')({context, github, core, process});
       - name: Copy trusted engine before caller checkout
-        run: mkdir -p "$RUNNER_TEMP/shared-scripts" && cp _shared/scripts/dependency-engine.cjs _shared/scripts/dependency-provenance.cjs "$RUNNER_TEMP/shared-scripts/"
+        run: mkdir -p "$RUNNER_TEMP/shared-scripts" && cp _shared/scripts/dependency-engine.cjs _shared/scripts/dependency-provenance.cjs _shared/scripts/dependency-go.cjs "$RUNNER_TEMP/shared-scripts/"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -129,6 +136,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ inputs.node-version }}
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        if: ${{ inputs.ecosystem == 'go' }}
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Prepare shared diagnostic scripts
         shell: bash
         run: |
@@ -136,13 +148,22 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dependency-report"
       - name: Dependency diff (diagnostic failure remains visible)
         continue-on-error: true
-        run: node "$RUNNER_TEMP/shared-scripts/dependency-engine.cjs" diff
+        run: |
+          if [ "$ECOSYSTEM" = go ]; then
+            node "$RUNNER_TEMP/shared-scripts/dependency-go.cjs" diff
+          else
+            node "$RUNNER_TEMP/shared-scripts/dependency-engine.cjs" diff
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dependency-diff
           path: ${{ runner.temp }}/dependency-report/diff.json
           if-no-files-found: error
           retention-days: 7
+      - name: Verify Go proxy checksums, cache integrity and reachable vulnerabilities
+        id: go-provenance
+        if: ${{ inputs.ecosystem == 'go' }}
+        run: node "$RUNNER_TEMP/shared-scripts/dependency-go.cjs" verify
       - name: Install
         id: install
         env:
@@ -150,6 +171,7 @@ jobs:
         run: bash -e -o pipefail -c "$COMMAND"
       - name: Verify registry provenance policy and npm signatures
         id: provenance
+        if: ${{ success() && inputs.ecosystem == 'npm' }}
         env:
           PROVENANCE_COMMAND: ${{ inputs.provenance-command }}
         run: node "$RUNNER_TEMP/shared-scripts/dependency-provenance.cjs"
@@ -180,7 +202,7 @@ jobs:
 
   bisect:
     needs: verify
-    if: ${{ failure() && needs.verify.outputs.eligible == 'true' && needs.verify.outputs.failed-step != '' && github.event.pull_request.head.ref == 'renovate/weekly-non-major' }}
+    if: ${{ failure() && inputs.ecosystem == 'npm' && needs.verify.outputs.eligible == 'true' && needs.verify.outputs.failed-step != '' && github.event.pull_request.head.ref == 'renovate/weekly-non-major' }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.bisect-timeout-minutes }}
     permissions:
@@ -252,6 +274,7 @@ jobs:
       - name: Comment results and split isolated packages
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
+          ECOSYSTEM: ${{ inputs.ecosystem }}
           VERIFY_RESULT: ${{ needs.verify.result }}
           BISECT_RESULT: ${{ needs.bisect.result }}
           LOCKFILE: ${{ inputs.lockfile-path }}
