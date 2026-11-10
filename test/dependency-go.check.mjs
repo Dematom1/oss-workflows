@@ -72,10 +72,12 @@ function repository(run) {
     git('config', 'user.email', 'fixture@example.invalid');
     git('config', 'user.name', 'Fixture');
     writeFileSync(join(repo, 'go.mod'), base);
+    writeFileSync(join(repo, 'go.sum'), 'example.com/alpha v1.0.0 h1:oldhash\nexample.com/alpha v1.0.0/go.mod h1:oldmodhash\n');
     git('add', '.');
     git('commit', '-m', 'base');
     const env = { ...process.env, BASE_REF: git('rev-parse', 'HEAD'), REPORT_DIR: join(root, 'report') };
     writeFileSync(join(repo, 'go.mod'), head);
+    writeFileSync(join(repo, 'go.sum'), 'example.com/alpha v1.0.0 h1:oldhash\nexample.com/alpha v1.0.0/go.mod h1:oldmodhash\nexample.com/alpha v1.1.0 h1:newhash\n');
     run({ root, repo, env });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
@@ -89,9 +91,14 @@ test('shipped Go diff summarizes go.mod and handles go.sum-only changes without 
   assert.match(message, /example.com\/added\/v2: \(added\) → v2.0.0/);
   assert.match(message, /example.com\/removed: v1.0.0 → \(removed\)/);
   writeFileSync(join(repo, 'go.mod'), base);
+  writeFileSync(join(repo, 'go.sum'), 'example.com/alpha v1.0.0 h1:oldhash\nexample.com/alpha v1.0.0/go.mod h1:oldmodhash\n');
   result = run();
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /No go.mod module version changes/);
+  assert.match(result.stdout, /No go.mod or go.sum changes/);
+  writeFileSync(join(repo, 'go.sum'), 'example.com/alpha v1.0.0 h1:oldhash\nexample.com/alpha v1.0.0/go.mod h1:oldmodhash\nexample.com/alpha v1.0.0 h1:newhash\n');
+  result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /example.com\/alpha@v1\.0\.0:\n\+ h1:newhash/);
 }));
 
 for (const failure of ['', 'vulnerable', 'mod download', 'mod verify', 'install', 'local replacement', 'cleanup', 'vulnerable+cleanup']) {

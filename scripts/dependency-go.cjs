@@ -38,7 +38,21 @@ function inventory(base, head) {
 function diff() {
   const base = exec('git', ['show', `${process.env.BASE_REF}:go.mod`]);
   const changes = inventory(parseMod(base), parseMod(fs.readFileSync('go.mod', 'utf8')));
-  const message = changes.map(c => `${c.name}: ${c.before} → ${c.after}`).join('\n') || 'No go.mod module version changes (go.sum or Renovate configuration only).';
+  const baseSum = cp.spawnSync('git', ['show', `${process.env.BASE_REF}:go.sum`], { encoding: 'utf8' });
+  const sumLines = text => new Set(text.split(/\r?\n/).filter(Boolean));
+  const beforeSum = sumLines(baseSum.status === 0 ? baseSum.stdout : '');
+  const afterSum = sumLines(fs.existsSync('go.sum') ? fs.readFileSync('go.sum', 'utf8') : '');
+  const sumChanges = [...new Set([...beforeSum, ...afterSum])].filter(line => beforeSum.has(line) !== afterSum.has(line));
+  const grouped = new Map();
+  for (const line of sumChanges) {
+    const [module, version, checksum] = line.split(/\s+/);
+    const key = `${module}@${version.replace(/\\/g, '/')}`;
+    const rows = grouped.get(key) || [];
+    rows.push(`${beforeSum.has(line) ? '-' : '+'} ${checksum}`);
+    grouped.set(key, rows);
+  }
+  const sumMessage = [...grouped].map(([key, rows]) => `${key}:\n${rows.join('\n')}`);
+  const message = [...changes.map(c => `${c.name}: ${c.before} → ${c.after}`), ...sumMessage].join('\n') || 'No go.mod or go.sum changes.';
   fs.mkdirSync(process.env.REPORT_DIR, { recursive: true });
   fs.writeFileSync(path.join(process.env.REPORT_DIR, 'diff.json'), JSON.stringify({ message }));
   console.log(message);
