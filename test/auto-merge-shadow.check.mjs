@@ -66,12 +66,16 @@ async function execute({ number = 0, snapshot = JSON.stringify(input), changed =
   try {
     for (const step of workflow.jobs.shadow.steps) {
       const env = { RUNNER_TEMP: directory, PR_NUMBER: String(number), SNAPSHOT: snapshot, SNAPSHOT_FILE: outputs.file };
-      await runInNewContext(`(async () => { ${step.with.script}\n })()`, {
+      const scriptResult = await runInNewContext(`(async () => { ${step.with.script}\n })()`, {
         github, core, context: { repo: input.repo }, require, Buffer, process: { env },
       });
+      outputs.result = scriptResult === undefined ? "" : JSON.stringify(scriptResult);
     }
     assert.equal(fs.existsSync(outputs.file), false, "snapshot is removed after evaluation");
-    return { result: JSON.parse(outputs.result), summary: summary.join(""), reads };
+    const jobOutput = workflow.jobs.shadow.outputs.result;
+    const stepOutput = jobOutput.match(/steps\.([^.]+)\.outputs\.([\w-]+)/);
+    assert.ok(stepOutput, "job output must map to a step output");
+    return { result: JSON.parse(outputs[stepOutput[2]]), summary: summary.join(""), reads };
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

@@ -30,7 +30,7 @@ jobs:
     name: Auto-merge policy (shadow)
     runs-on: ${{ inputs.runner-label }}
     outputs:
-      result: ${{ steps.evaluate.outputs.result }}
+      result: ${{ steps.evaluate.outputs.policy }}
     steps:
       - name: Collect PR metadata or trusted snapshot
         id: collect
@@ -86,7 +86,8 @@ jobs:
                 throw new Error('Snapshot repository must match calling repository');
               }
               const result = policy.exports.evaluatePolicy(input);
-              core.setOutput('result', JSON.stringify(result));
+              // github-script owns the reserved result output.
+              core.setOutput('policy', JSON.stringify(result));
               core.info(result.verdict);
               await core.summary.addHeading('Auto-merge policy (shadow)').addRaw(result.verdict)
                 .addRaw('\n\nAdvisory only; no approval or merge authority. F-07–F-09 and infra eligibility are not evaluated.').write();
