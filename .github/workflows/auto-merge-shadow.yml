@@ -57,7 +57,7 @@ jobs:
                   pr.changed_files !== current.changed_files) {
                 throw new Error('PR changed while collecting inventory; retry');
               }
-              input = { repo: context.repo, pr, files };
+              input = { repo: context.repo, pr: current, files };
             }
             const fs = require('node:fs');
             const path = require('node:path');
