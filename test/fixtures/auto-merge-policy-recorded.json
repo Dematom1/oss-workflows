@@ -1,0 +1,119 @@
+[
+  {
+    "repo": {
+      "owner": "example",
+      "repo": "project"
+    },
+    "pr": {
+      "additions": 163,
+      "author_association": "OWNER",
+      "body": "<!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\": \"1111111111111111111111111111111111111111\", \"steps\": [{\"step\": \"intent\", \"status\": \"completed\"}, {\"step\": \"rebase\", \"status\": \"completed\"}, {\"step\": \"review\", \"status\": \"completed\"}, {\"step\": \"test\", \"status\": \"completed\"}, {\"step\": \"document\", \"status\": \"completed\"}, {\"step\": \"lint\", \"status\": \"completed\"}, {\"step\": \"push\", \"status\": \"completed\"}, {\"step\": \"pr\", \"status\": \"running\"}, {\"step\": \"ci\", \"status\": \"pending\"}]} -->",
+      "changed_files": 4,
+      "deletions": 3,
+      "head": {
+        "repo": {
+          "full_name": "example/project"
+        },
+        "sha": "1111111111111111111111111111111111111111"
+      }
+    },
+    "files": [
+      {
+        "filename": ".github/workflows/check-0.yml"
+      },
+      {
+        "filename": "ordinary-1.txt"
+      },
+      {
+        "filename": "test/tool-2.mjs"
+      },
+      {
+        "filename": "test/tool-3.mjs"
+      }
+    ]
+  },
+  {
+    "repo": {
+      "owner": "example",
+      "repo": "project"
+    },
+    "pr": {
+      "additions": 210,
+      "author_association": "OWNER",
+      "body": "<!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\": \"1111111111111111111111111111111111111111\", \"steps\": [{\"step\": \"intent\", \"status\": \"completed\"}, {\"step\": \"rebase\", \"status\": \"completed\"}, {\"step\": \"review\", \"status\": \"completed\"}, {\"step\": \"test\", \"status\": \"completed\"}, {\"step\": \"document\", \"status\": \"completed\"}, {\"step\": \"lint\", \"status\": \"completed\"}, {\"step\": \"push\", \"status\": \"completed\"}, {\"step\": \"pr\", \"status\": \"running\"}, {\"step\": \"ci\", \"status\": \"pending\"}], \"live_validation\": {\"verdict\": \"go\", \"live\": 2, \"total\": 2}} -->",
+      "changed_files": 3,
+      "deletions": 0,
+      "head": {
+        "repo": {
+          "full_name": "example/project"
+        },
+        "sha": "1111111111111111111111111111111111111111"
+      }
+    },
+    "files": [
+      {
+        "filename": "ordinary-0.txt"
+      },
+      {
+        "filename": "ordinary-1.txt"
+      },
+      {
+        "filename": "ordinary-2.txt"
+      }
+    ]
+  },
+  {
+    "repo": {
+      "owner": "example",
+      "repo": "project"
+    },
+    "pr": {
+      "additions": 465,
+      "author_association": "OWNER",
+      "body": "<!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\": \"1111111111111111111111111111111111111111\", \"steps\": [{\"step\": \"intent\", \"status\": \"completed\"}, {\"step\": \"rebase\", \"status\": \"completed\"}, {\"step\": \"review\", \"status\": \"completed\"}, {\"step\": \"test\", \"status\": \"completed\"}, {\"step\": \"document\", \"status\": \"completed\"}, {\"step\": \"lint\", \"status\": \"completed\"}, {\"step\": \"push\", \"status\": \"completed\"}, {\"step\": \"pr\", \"status\": \"running\"}, {\"step\": \"ci\", \"status\": \"pending\"}], \"live_validation\": {\"verdict\": \"inconclusive\", \"live\": 2, \"total\": 3}} -->",
+      "changed_files": 11,
+      "deletions": 21,
+      "head": {
+        "repo": {
+          "full_name": "example/project"
+        },
+        "sha": "1111111111111111111111111111111111111111"
+      }
+    },
+    "files": [
+      {
+        "filename": ".github/workflows/check-0.yml"
+      },
+      {
+        "filename": "ordinary-1.txt"
+      },
+      {
+        "filename": "renovate/preset-2.json"
+      },
+      {
+        "filename": "scripts/tool-3.cjs"
+      },
+      {
+        "filename": "scripts/tool-4.cjs"
+      },
+      {
+        "filename": "scripts/tool-5.cjs"
+      },
+      {
+        "filename": "test/tool-6.mjs"
+      },
+      {
+        "filename": "ordinary-7.txt"
+      },
+      {
+        "filename": "scripts/tool-8.cjs"
+      },
+      {
+        "filename": "scripts/tool-9.cjs"
+      },
+      {
+        "filename": "ordinary-10.txt"
+      }
+    ]
+  }
+]
