@@ -18,6 +18,57 @@ jobs:
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/contribution-checks.yml
 
+  shadow-snapshot:
+    uses: ./.github/workflows/auto-merge-shadow.yml
+    with:
+      runner-label: ubuntu-latest
+      snapshot: >-
+        {"repo":{"owner":"${{ github.repository_owner }}","repo":"${{ github.event.repository.name || github.event.pull_request.base.repo.name }}"},"pr":{"head":{"sha":"${{ github.sha }}","repo":{"full_name":"${{ github.repository }}"}},"base":{"sha":"${{ github.sha }}"},"author_association":"OWNER","changed_files":1,"additions":0,"deletions":0,"body":"<!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\":\"${{ github.sha }}\",\"steps\":[{\"step\":\"review\",\"status\":\"completed\"},{\"step\":\"test\",\"status\":\"completed\"},{\"step\":\"document\",\"status\":\"completed\"}],\"live_validation\":{\"verdict\":\"go\"}} -->"},"files":[{"filename":"ordinary.txt"}]}
+
+  shadow-pr-number:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/auto-merge-shadow.yml
+    with:
+      runner-label: ubuntu-latest
+      pr-number: ${{ github.event.pull_request.number }}
+
+  assert-shadow-results:
+    needs: [shadow-snapshot, shadow-pr-number]
+    if: always() && needs.shadow-snapshot.result == 'success' && (needs.shadow-pr-number.result == 'success' || needs.shadow-pr-number.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Check advisory contract
+        env:
+          SNAPSHOT_RESULT: ${{ needs.shadow-snapshot.outputs.result }}
+          PR_RESULT: ${{ needs.shadow-pr-number.outputs.result }}
+          PR_SKIPPED: ${{ needs.shadow-pr-number.result == 'skipped' }}
+        run: |
+          node - <<'NODE'
+          const assert = require('node:assert/strict');
+          const results = [JSON.parse(process.env.SNAPSHOT_RESULT)];
+          if (!JSON.parse(process.env.PR_SKIPPED)) results.push(JSON.parse(process.env.PR_RESULT));
+          for (const result of results) {
+            assert.equal(typeof result.wouldMerge, 'boolean');
+            assert.equal(typeof result.verdict, 'string');
+            assert.ok(Array.isArray(result.flags));
+            for (const flag of result.flags) {
+              assert.match(flag.id, /^F-0[1-6]$/);
+              assert.equal(typeof flag.reason, 'string');
+            }
+            assert.deepEqual(result.notEvaluated, ['F-07', 'F-08', 'F-09', 'infra eligibility']);
+          }
+          assert.equal(results[0].wouldMerge, true);
+          assert.equal(results[0].verdict, 'would merge itself: yes, because no flags');
+          assert.deepEqual(results[0].flags, []);
+          if (results[1]) {
+            // PR-triggered runs touch workflows, so F-02 is expected, not a failure.
+            assert.equal(results[1].wouldMerge, false);
+            assert.match(results[1].verdict, /^would merge itself: no, because /);
+            assert.ok(results[1].flags.some(flag => flag.id === 'F-02'));
+          }
+          NODE
+
   merge-dry-run:
     if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo != null && github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/merge-release.yml

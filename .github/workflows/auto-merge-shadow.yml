@@ -1,0 +1,96 @@
+name: Auto-merge policy (shadow only)
+
+# For trusted main-owned callers. Never a required check or a merge authority.
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: PR in the calling repository; supply exactly one of pr-number or snapshot.
+        type: number
+        default: 0
+      snapshot:
+        description: JSON {repo, pr, files}; trusted complete inventory bound to pr.head.sha (40 hex characters).
+        type: string
+        default: ""
+      runner-label:
+        description: Credential-free runner label selected by the trusted caller.
+        type: string
+        default: ubuntu-latest
+    outputs:
+      result:
+        description: JSON flags, wouldMerge, verdict, and notEvaluated; advisory only.
+        value: ${{ jobs.shadow.outputs.result }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  shadow:
+    name: Auto-merge policy (shadow)
+    runs-on: ${{ inputs.runner-label }}
+    outputs:
+      result: ${{ steps.evaluate.outputs.policy }}
+    steps:
+      - name: Collect PR metadata or trusted snapshot
+        id: collect
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          PR_NUMBER: ${{ inputs.pr-number }}
+          SNAPSHOT: ${{ inputs.snapshot }}
+        with:
+          script: |
+            const number = Number(process.env.PR_NUMBER);
+            const supplied = process.env.SNAPSHOT;
+            if (!Number.isSafeInteger(number) || number < 0 || (number > 0) === Boolean(supplied)) {
+              throw new Error('Supply exactly one positive pr-number or snapshot');
+            }
+            let input;
+            if (supplied) {
+              input = JSON.parse(supplied);
+            } else {
+              const args = { ...context.repo, pull_number: number };
+              const { data: pr } = await github.rest.pulls.get(args);
+              const files = await github.paginate(github.rest.pulls.listFiles, { ...args, per_page: 100 });
+              const { data: current } = await github.rest.pulls.get(args);
+              if (pr.head.sha !== current.head.sha || pr.base.sha !== current.base.sha ||
+                  pr.changed_files !== current.changed_files) {
+                throw new Error('PR changed while collecting inventory; retry');
+              }
+              input = { repo: context.repo, pr: current, files };
+            }
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const directory = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'shadow-policy-'));
+            const file = path.join(directory, 'snapshot.json');
+            fs.writeFileSync(file, JSON.stringify(input), { mode: 0o600 });
+            core.setOutput('file', file);
+      - name: Evaluate F-01 through F-06 (advisory only)
+        id: evaluate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          SNAPSHOT_FILE: ${{ steps.collect.outputs.file }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            try {
+              // Content-addressed shared code, never caller/PR code. Keep the blob pin
+              // in sync with scripts/auto-merge-policy.cjs (checked offline).
+              const { data: blob } = await github.rest.git.getBlob({
+                owner: 'Dematom1', repo: 'oss-workflows', file_sha: 'c5a236fc755b64c938e9912433d1dccbe9847753',
+              });
+              const policy = { exports: {} };
+              new Function('module', Buffer.from(blob.content, 'base64').toString('utf8'))(policy);
+              const input = policy.exports.parseSnapshot(fs.readFileSync(process.env.SNAPSHOT_FILE, 'utf8'));
+              if (input.repo.owner !== context.repo.owner || input.repo.repo !== context.repo.repo) {
+                throw new Error('Snapshot repository must match calling repository');
+              }
+              const result = policy.exports.evaluatePolicy(input);
+              // github-script owns the reserved result output.
+              core.setOutput('policy', JSON.stringify(result));
+              core.info(result.verdict);
+              await core.summary.addHeading('Auto-merge policy (shadow)').addRaw(result.verdict)
+                .addRaw('\n\nAdvisory only; no approval or merge authority. F-07–F-09 and infra eligibility are not evaluated.').write();
+            } finally {
+              fs.rmSync(process.env.SNAPSHOT_FILE, { force: true });
+            }

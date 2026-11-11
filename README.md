@@ -7,7 +7,26 @@ Callers outside Dematom1, including `dematom-labs/workflows`, use the same inter
 
 Reusable workflow: `.github/workflows/contribution-checks.yml`. Call it from a thin caller workflow that owns `pull_request` events and concurrency. Include `opened`, `synchronize`, `reopened`, and `edited` so title/body edits rerun checks. Pin `uses` to this repository's full 40-character commit SHA. Pass `release-bot-login` as the exact release App bot login; leave it empty when no release-PR exemption is configured. The workflow emits terminal checks for PR title, no-mistakes attestation, and generated-file protection. It uses read-only permissions and does not check out caller code. The caller must grant at least `contents: read` and `pull-requests: read`.
 
-The non-required `Auto-merge policy (shadow)` job writes `would merge itself: yes / no, because ...` to its summary. Flags cover forks or untrusted authors (F-01), sensitive paths or incomplete file lists (F-02), and diffs over 500 added plus deleted lines (F-03). Attestation flags cover missing, malformed, incomplete, or stale evidence (F-04), any test override reason (F-05), and missing live validation or a verdict other than `go` (F-06). Sensitive paths include `.github/`, release-please and Renovate configuration, and lockfiles. Renames check both paths. The shadow period exists to tune the size cap. The job never approves, comments, labels, or merges, and flags do not fail it. API or job errors can still fail the job. Attestations remain author assertions, not signed proof. Risk and signing flags F-07 through F-09 are not evaluated. This job must not become a required check.
+The non-required `Auto-merge policy (shadow)` job is advisory only. See [Standalone shadow interface](#standalone-shadow-interface) for its policy, safety limits, and reusable workflow contract.
+
+## Standalone shadow interface
+
+Reusable workflow: `.github/workflows/auto-merge-shadow.yml`. Pin it to a full commit SHA from a trusted, main-owned caller. It runs only F-01 through F-06, without contribution gates or a `pull_request` event. Grant `contents: read` and `pull-requests: read`. No secrets are required. It never checks out caller code or writes to GitHub.
+
+Supply exactly one input:
+
+- `pr-number`: a positive PR number in the calling repository. The collector fetches metadata and all file pages separately from evaluation. A head, base, or file-count change during collection fails the job for retry.
+- `snapshot`: a JSON string `{ "repo": { "owner": "example", "repo": "project" }, "pr": { ... }, "files": [ ... ] }`. Use GitHub API field names. Required PR fields are `head.sha` as a full 40-character lowercase hexadecimal SHA, `head.repo.full_name` or a null `head.repo`, `author_association`, `changed_files`, `additions`, and `deletions`. `body` is optional. File entries require `filename` and retain `previous_filename` on renames. The repository must match the caller. The trusted producer must supply the complete inventory for that SHA; a count mismatch produces F-02, never a clear verdict. The workflow cannot authenticate supplied metadata or inventory against the SHA.
+
+`runner-label` defaults to `ubuntu-latest`; callers can select their credential-free Lenovo runner label. Do not pass inherited secrets or select a runner with ambient credentials. Keep PR-controlled strings out of runner selection and workflow code.
+
+The workflow output `result` is JSON with `flags` as `{id, reason}` objects, `wouldMerge` as a boolean, a legacy-format `verdict`, and `notEvaluated`. A clear result is advisory, not infra eligibility: F-07 through F-09 and infra eligibility are not evaluated. Attestations remain author assertions. Do not require this check or use it to authorize a merge.
+
+Offline consumers can call `require('./scripts/auto-merge-policy.cjs').evaluatePolicy({ repo, pr, files })`. The pure function performs no I/O. `parseSnapshot(json)` validates serialized snapshot fields before evaluation. Both workflows load only this repository's module at its immutable Git blob SHA, not a mutable branch or PR code. After changing the module, update both workflow blob pins with `git hash-object scripts/auto-merge-policy.cjs`; the offline tests verify those pins.
+
+```sh
+node --test test/auto-merge-*.check.mjs
+```
 
 ## Weekly release merge interface
 
