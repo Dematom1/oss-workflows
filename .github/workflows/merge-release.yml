@@ -76,9 +76,19 @@ jobs:
                 return;
               }
               const sha = pr.head.sha;
-              const checks = await github.paginate(github.rest.checks.listForRef, {
-                ...repo, ref: sha, filter: 'latest', per_page: 100,
+              const runs = await github.paginate(github.rest.checks.listForRef, {
+                ...repo, ref: sha, filter: 'all', per_page: 100,
               });
+              // filter=latest picks by completed_at per suite, so it can drop the newest run; fetch all and
+              // keep the newest run per app and check name: later started_at wins, a queued run (started_at
+              // null) is newest, and the higher id breaks ties.
+              const started = run => run.started_at === null ? Infinity : Date.parse(run.started_at);
+              const newer = (a, b) => started(a) - started(b) || a.id - b.id;
+              const checks = [...runs.reduce((latest, run) => {
+                const key = `${run.app?.slug}/${run.name}`;
+                if (!latest.has(key) || newer(run, latest.get(key)) > 0) latest.set(key, run);
+                return latest;
+              }, new Map()).values()];
               const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
                 ...repo, ref: sha, per_page: 100,
               });

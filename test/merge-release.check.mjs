@@ -26,18 +26,24 @@ const pr = {
   },
 };
 
-async function execute(mergeability) {
+const run = fields => ({
+  id: 1, name: "main-required-ci", app: { slug: "github-actions" }, status: "completed", conclusion: "success",
+  started_at: "2026-11-16T00:50:33Z", ...fields,
+});
+
+async function execute(mergeability, checkRuns = [run({})]) {
   let pullFetches = 0;
   const reports = [];
   const delays = [];
   let mergeCalls = 0;
+  let checkQuery;
   const github = {
     rest: {
       pulls: { list: "pulls", get: async () => ({ data: mergeability[pullFetches++] ?? pr }) },
       checks: { listForRef: "checks" },
       repos: { getCombinedStatusForRef: async () => ({ data: { statuses: [], total_count: 0 } }) },
     },
-    paginate: async endpoint => endpoint === "pulls" ? [pr] : [{ status: "completed", conclusion: "success" }],
+    paginate: async (endpoint, params) => endpoint === "pulls" ? [pr] : (checkQuery = params, checkRuns),
   };
   const core = {
     info() {},
@@ -52,7 +58,7 @@ async function execute(mergeability) {
     process: { env: { RELEASE_AUTHOR: "release-app[bot]", DRY_RUN: "true", GITHUB_API_URL: "https://api.github.com", RELEASE_TOKEN: "fixture" } },
     setTimeout(callback, milliseconds) { delays.push(milliseconds); callback(); return 0; },
   });
-  return { pullFetches, reports: reports.join("\n"), delays, mergeCalls };
+  return { pullFetches, reports: reports.join("\n"), delays, mergeCalls, checkQuery };
 }
 
 test("shared workflows expose caller contracts", () => {
@@ -104,5 +110,68 @@ test("leaves unresolved mergeability inconclusive without attempting a merge", a
   assert.deepEqual(result.delays, [3000, 3000, 3000, 3000]);
   assert.match(result.reports, /has not finished computing mergeability/);
   assert.doesNotMatch(result.reports, /mergeable=null/);
+  assert.equal(result.mergeCalls, 0);
+});
+
+test("a superseded cancelled run does not block once the newest run succeeded", async () => {
+  const clean = { ...pr, mergeable: true, mergeable_state: "clean" };
+  const result = await execute([pr, clean], [
+    run({ id: 1, conclusion: "cancelled", started_at: "2026-11-16T00:50:33Z" }),
+    run({ id: 2, started_at: "2026-11-16T00:57:07Z" }),
+  ]);
+  assert.match(result.reports, /Dry run: would squash/);
+  assert.equal(result.mergeCalls, 0);
+});
+
+test("blocks when the newest run of a check was cancelled, whatever order runs arrive in", async () => {
+  const result = await execute([pr], [
+    run({ id: 2, conclusion: "cancelled", started_at: "2026-11-16T00:57:07Z" }),
+    run({ id: 1, started_at: "2026-11-16T00:50:33Z" }),
+  ]);
+  assert.match(result.reports, /checks missing, pending or failing/);
+  assert.match(result.reports, /main-required-ci: completed\/cancelled/);
+  assert.equal(result.mergeCalls, 0);
+});
+
+test("blocks when the newest run of a check failed", async () => {
+  const result = await execute([pr], [
+    run({ id: 1, started_at: "2026-11-16T00:50:33Z" }),
+    run({ id: 2, conclusion: "failure", started_at: "2026-11-16T00:57:07Z" }),
+  ]);
+  assert.match(result.reports, /main-required-ci: completed\/failure/);
+  assert.equal(result.mergeCalls, 0);
+});
+
+test("blocks when the newest run of a check is still pending", async () => {
+  const result = await execute([pr], [
+    run({ id: 2, status: "queued", conclusion: null, started_at: null }),
+    run({ id: 1, started_at: "2026-11-16T00:50:33Z" }),
+  ]);
+  assert.match(result.reports, /main-required-ci: queued/);
+  assert.equal(result.mergeCalls, 0);
+});
+
+test("reads every run, not filter=latest, and keeps the newest started run even if an older one completed later", async () => {
+  const clean = { ...pr, mergeable: true, mergeable_state: "clean" };
+  const result = await execute([pr, clean], [
+    run({ id: 1, conclusion: "cancelled", started_at: "2026-11-16T00:50:33Z", completed_at: "2026-11-16T01:10:00Z" }),
+    run({ id: 2, started_at: "2026-11-16T00:57:07Z", completed_at: "2026-11-16T01:00:00Z" }),
+  ]);
+  assert.equal(result.checkQuery.filter, "all");
+  assert.match(result.reports, /Dry run: would squash/);
+});
+
+test("blocks when no check run exists for the head", async () => {
+  const result = await execute([pr], []);
+  assert.match(result.reports, /checks missing, pending or failing/);
+  assert.equal(result.mergeCalls, 0);
+});
+
+test("an older failure from another app is not hidden by a newer run with the same name", async () => {
+  const result = await execute([pr], [
+    run({ id: 3, started_at: "2026-11-16T00:57:07Z" }),
+    run({ id: 1, app: { slug: "other-app" }, conclusion: "failure", started_at: "2026-11-16T00:50:33Z" }),
+  ]);
+  assert.match(result.reports, /main-required-ci: completed\/failure/);
   assert.equal(result.mergeCalls, 0);
 });
