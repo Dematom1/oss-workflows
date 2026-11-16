@@ -30,7 +30,7 @@ node --test test/auto-merge-*.check.mjs
 
 ## Weekly release merge interface
 
-Reusable workflow: `.github/workflows/merge-release.yml`. Pin `uses` to this repository's full 40-character commit SHA. Pass `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` explicitly as secrets, and grant the caller `contents: read`, `pull-requests: read`, `checks: read`, and `statuses: read` permissions. `dry-run` defaults to `true`; set it to `false` only for a scheduled release caller authorized to merge. The workflow scopes its App token to the calling repository and only merges the single eligible, fully green release-please PR after rechecking its identity and head SHA.
+Reusable workflow: `.github/workflows/merge-release.yml`. Pin `uses` to this repository's full 40-character commit SHA. Pass `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` explicitly as secrets, and grant the caller `contents: read`, `pull-requests: read`, `checks: read`, and `statuses: read` permissions. `dry-run` defaults to `true`; set it to `false` only for a scheduled release caller authorized to merge. The workflow scopes its App token to the calling repository and only merges the single eligible release-please PR whose newest run of every check is green, after rechecking its identity and head SHA. Superseded runs of a check that a newer run replaced do not block.
 
 ## Dependency verification interface
 

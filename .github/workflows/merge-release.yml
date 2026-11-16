@@ -76,9 +76,17 @@ jobs:
                 return;
               }
               const sha = pr.head.sha;
-              const checks = await github.paginate(github.rest.checks.listForRef, {
+              const runs = await github.paginate(github.rest.checks.listForRef, {
                 ...repo, ref: sha, filter: 'latest', per_page: 100,
               });
+              // filter=latest is scoped to each check suite, so superseded runs from older suites still appear.
+              // Keep only the newest run per app and check name; the higher id breaks ties.
+              const newer = (a, b) => Date.parse(a.started_at) - Date.parse(b.started_at) || a.id - b.id;
+              const checks = [...runs.reduce((latest, run) => {
+                const key = `${run.app?.slug}/${run.name}`;
+                if (!latest.has(key) || newer(run, latest.get(key)) > 0) latest.set(key, run);
+                return latest;
+              }, new Map()).values()];
               const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
                 ...repo, ref: sha, per_page: 100,
               });
