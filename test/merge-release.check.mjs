@@ -28,7 +28,7 @@ const pr = {
 
 const run = fields => ({
   id: 1, name: "main-required-ci", app: { slug: "github-actions" }, status: "completed", conclusion: "success",
-  started_at: "2026-11-16T00:50:33Z", ...fields,
+  created_at: "2026-11-16T00:50:33Z", started_at: "2026-11-16T00:50:33Z", ...fields,
 });
 
 async function execute(mergeability, checkRuns = [run({})]) {
@@ -143,10 +143,10 @@ test("blocks when the newest run of a check failed", async () => {
 
 test("blocks when the newest run of a check is still pending", async () => {
   const result = await execute([pr], [
-    run({ id: 1, started_at: "2026-11-16T00:50:33Z" }),
-    run({ id: 2, status: "in_progress", conclusion: null, started_at: "2026-11-16T00:57:07Z" }),
+    run({ id: 1, created_at: "2026-11-16T00:50:33Z", started_at: "2026-11-16T00:50:33Z" }),
+    run({ id: 2, created_at: "2026-11-16T00:57:07Z", status: "queued", conclusion: null, started_at: null }),
   ]);
-  assert.match(result.reports, /main-required-ci: in_progress/);
+  assert.match(result.reports, /main-required-ci: queued/);
   assert.equal(result.mergeCalls, 0);
 });
 
